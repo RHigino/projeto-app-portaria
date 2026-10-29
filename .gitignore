@@ -1,0 +1,8 @@
+# Operational data: users, password hashes, sessions and personal records.
+dados/
+*.db
+*.db-wal
+*.db-shm
+
+__pycache__/
+*.pyc

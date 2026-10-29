@@ -1,0 +1,21 @@
+{
+  "format": "gateflow.records.v1",
+  "records": [
+    {
+      "module": "rotas",
+      "status": "Em aberto",
+      "payload": {
+        "rota": "Rota de exemplo",
+        "tipo": "Regular",
+        "placa": "ABC1D23",
+        "condutor": "Condutor de exemplo",
+        "auxiliar": "",
+        "lacre": "LACRE-0001",
+        "saida": "2026-10-28T10:00",
+        "lacre_retorno": "",
+        "retorno": "",
+        "observacoes": "Registro fictício para testar a importação."
+      }
+    }
+  ]
+}
