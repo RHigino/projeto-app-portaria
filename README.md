@@ -54,7 +54,7 @@ As restrições são aplicadas pelo servidor, inclusive em chamadas diretas à A
 
 Veículos; rotas; saída de materiais; devoluções; equipamentos móveis; armários e escaninhos; cadastro de pessoas. Os lançamentos são feitos na página **Novo registro** do menu.
 
-As abas por veículo foram reunidas em Veículos. Consulte `MAPEAMENTO_PLANILHA.md` para o vínculo entre abas e módulos. Macros, fórmulas e histórico da planilha não são executados ou migrados automaticamente. Cadastro de pessoas é independente: nesta versão, não há preenchimento automático dos demais formulários a partir dele. Ele usa um único campo **Documento** (CPF, RG ou CNH, o que a pessoa apresentar) e não tem situação (em aberto/concluído).
+As abas por veículo foram reunidas em Veículos. Consulte `MAPEAMENTO_PLANILHA.md` para o vínculo entre abas e módulos. Macros, fórmulas e histórico da planilha não são executados ou migrados automaticamente. Cadastro de pessoas é independente: nesta versão, não há preenchimento automático dos demais formulários a partir dele. Ele usa um único campo **Documento** (CPF, RG ou CNH, o que a pessoa apresentar) e não tem situação (em aberto/concluído). A coluna Situação aparece apenas em Veículos e Rotas; Saída de materiais e Devoluções não têm situação, e Equipamentos móveis e Armários e escaninhos a usam só internamente para o botão Registrar retorno.
 
 ## Operação diária
 

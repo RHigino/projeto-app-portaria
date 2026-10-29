@@ -173,4 +173,12 @@ class IntegrationTest(unittest.TestCase):
             payload=json.loads(c.execute('SELECT payload FROM records WHERE id=?',(rid,)).fetchone()[0])
         self.assertEqual(payload,{'nome':'Antigo','documento':'RG 9','empresa':'E'})
 
+    def test_status_only_where_it_matters(self):
+        material={'module':'materiais','payload':{'nome':'C','material':'Caixa','quantidade':2,'unidade':'Caixa','autorizacao':'G','liberacao':'Escrito','saida':'2026-10-28T10:00'}}
+        self.assertEqual(app.validate_record(material)[2],'Concluído')
+        with self.assertRaises(ValueError):app.validate_record({**material,'payload':{**material['payload'],'cargo':'X'}})
+        equipamento={'module':'equipamentos','payload':{'nome':'C','matricula':'1','equipamento':'Coletor','patrimonio':'P1','retirada':'2026-10-28T10:00'}}
+        self.assertEqual(app.validate_record(equipamento)[2],'Em aberto')  # still open until "Registrar retorno"
+        self.assertFalse(app.MODULES['equipamentos'].get('showStatus',True))
+
 if __name__=='__main__':unittest.main(verbosity=2)

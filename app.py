@@ -75,6 +75,15 @@ def initialize():
                 cpf,rg=payload.pop('cpf',''),payload.pop('rg','')
                 payload['documento']=payload.get('documento') or cpf or rg
                 c.execute('UPDATE records SET payload=? WHERE id=?',(json.dumps(payload,ensure_ascii=False),rid))
+        # Saída de materiais no longer has "cargo".
+        for rid,raw in c.execute("SELECT id,payload FROM records WHERE module='materiais'").fetchall():
+            payload=json.loads(raw)
+            if 'cargo' in payload:
+                payload.pop('cargo')
+                c.execute('UPDATE records SET payload=? WHERE id=?',(json.dumps(payload,ensure_ascii=False),rid))
+        # Modules without a life cycle are always stored as concluded, so they never count as open.
+        for module in [m['id'] for m in SCHEMA if m.get('status') is False]:
+            c.execute("UPDATE records SET status='Concluído' WHERE module=? AND status!='Concluído'",(module,))
 
 def password_hash(value):
     salt = secrets.token_hex(16)
