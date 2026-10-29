@@ -10,3 +10,13 @@
 .presence.off{color:#b0443d}
 .presence.off::before{background:#d9534f}
 .presence+small{display:block;margin-top:5px}
+.modulechecks{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0}
+.modulechecks[hidden]{display:none}
+.modulechecks legend{padding:0 6px;font-size:12px;font-weight:600}
+.modulechecks legend b{color:#b57561}
+.modulechecks>div{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px}
+.modulechecks label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;cursor:pointer}
+.modulechecks input{width:16px;height:16px;padding:0;margin:0;accent-color:var(--green)}
+@media(max-width:800px){.modulechecks>div{grid-template-columns:1fr}}
+.fulltable td,.fulltable th{padding-left:14px;padding-right:14px}
+.fulltable td strong{color:var(--ink)}

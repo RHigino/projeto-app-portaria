@@ -62,8 +62,19 @@ def initialize():
         if 'returned_by' not in columns:
             c.execute('ALTER TABLE records ADD COLUMN returned_by INTEGER REFERENCES users(id)')
             c.execute('ALTER TABLE records ADD COLUMN returned_at TEXT')
-        if 'last_seen' not in {r[1] for r in c.execute('PRAGMA table_info(users)')}:
+        user_columns={r[1] for r in c.execute('PRAGMA table_info(users)')}
+        if 'last_seen' not in user_columns:
             c.execute('ALTER TABLE users ADD COLUMN last_seen REAL')
+        if 'modules' not in user_columns:
+            # JSON list of module ids an operator may use; NULL means every module.
+            c.execute('ALTER TABLE users ADD COLUMN modules TEXT')
+        # Cadastro de pessoas: CPF and RG became a single "documento" field.
+        for rid,raw in c.execute("SELECT id,payload FROM records WHERE module='pessoas'").fetchall():
+            payload=json.loads(raw)
+            if 'cpf' in payload or 'rg' in payload:
+                cpf,rg=payload.pop('cpf',''),payload.pop('rg','')
+                payload['documento']=payload.get('documento') or cpf or rg
+                c.execute('UPDATE records SET payload=? WHERE id=?',(json.dumps(payload,ensure_ascii=False),rid))
 
 def password_hash(value):
     salt = secrets.token_hex(16)
@@ -92,6 +103,17 @@ def valid_user(data):
     if role not in ('admin','operador'):
         raise ValueError('Perfil inválido.')
     return name.strip(), username, password_hash(password), role
+
+def valid_modules(value,role):
+    """Stored form of an operator's allowed modules: None (all) or a JSON list in schema order."""
+    if role=='admin' or value is None:return None
+    if not isinstance(value,list) or not value or not all(isinstance(m,str) and m in MODULES for m in value):
+        raise ValueError('Selecione ao menos uma aba válida para o operador.')
+    return json.dumps([m for m in MODULES if m in value])
+
+def allowed_modules(user):
+    if user['role']=='admin' or not user['modules']:return set(MODULES)
+    return set(json.loads(user['modules']))&set(MODULES)
 
 def validate_record(data):
     module = data.get('module')
@@ -133,6 +155,7 @@ def validate_record(data):
     if clean.get('km_final') and float(clean['km_final'])<float(clean['km_inicial']): raise ValueError('KM final menor que o KM inicial.')
     status=data.get('status','Em aberto')
     if status not in STATUSES: raise ValueError('Situação inválida.')
+    if MODULES[module].get('status') is False: status='Concluído'  # no open/closed life cycle
     return module,clean,status
 
 def merge_return(old,data):
@@ -185,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception: return None
         token=cookie.get('gateflow_session')
         if not token:return None
-        user=c.execute('SELECT u.id,u.name,u.username,u.role,u.last_seen,s.csrf,s.token FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires>? AND u.active=1',
+        user=c.execute('SELECT u.id,u.name,u.username,u.role,u.last_seen,u.modules,s.csrf,s.token FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires>? AND u.active=1',
                        (hashlib.sha256(token.value.encode()).hexdigest(),time.time())).fetchone()
         if user and (user['last_seen'] or 0)<time.time()-SEEN_THROTTLE:
             # Committed at once so routes that open BEGIN IMMEDIATE are not inside a transaction.
@@ -249,23 +272,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,{'ok':True},{'Set-Cookie':f'gateflow_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800{secure}'})
             if not user:return self.send(401,{'error':'Faça login para continuar.'})
             if method!='GET' and not hmac.compare_digest(self.headers.get('X-CSRF-Token',''),user['csrf']):return self.send(403,{'error':'Sessão inválida. Recarregue a página.'})
-            admin=user['role']=='admin'
+            admin=user['role']=='admin';allowed=allowed_modules(user)
             if path=='/api/logout' and method=='POST':
                 c.execute('DELETE FROM sessions WHERE token=?',(user['token'],));c.commit()
                 return self.send(200,{'ok':True},{'Set-Cookie':'gateflow_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'})
             if path=='/api/bootstrap' and method=='GET':
-                return self.send(200,{'schema':SCHEMA,'settings':dict(c.execute('SELECT key,value FROM settings').fetchall()),'statuses':STATUSES})
+                return self.send(200,{'schema':[m for m in SCHEMA if m['id'] in allowed],'settings':dict(c.execute('SELECT key,value FROM settings').fetchall()),'statuses':STATUSES})
             if path=='/api/records' and method=='GET':
                 rows=c.execute('SELECT r.*,u.name creator,ru.name returner FROM records r JOIN users u ON u.id=r.created_by LEFT JOIN users ru ON ru.id=r.returned_by ORDER BY r.id DESC').fetchall()
-                return self.send(200,[record_dict(r) for r in rows])
+                return self.send(200,[record_dict(r) for r in rows if r['module'] in allowed])
             if path=='/api/records' and method=='POST':
-                module,payload,status=validate_record(self.body())
-                if not admin and status!='Em aberto':return self.send(403,{'error':'Operadores só podem cadastrar registros em aberto.'})
+                data=self.body();module,payload,status=validate_record(data)
+                if module not in allowed:return self.send(403,{'error':'Você não tem acesso a esta aba.'})
+                if not admin and data.get('status','Em aberto')!='Em aberto':return self.send(403,{'error':'Operadores só podem cadastrar registros em aberto.'})
                 stamp=now();cursor=c.execute('INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)',(module,json.dumps(payload,ensure_ascii=False),status,user['id'],stamp,stamp))
                 audit(c,user,'Novo registro',cursor.lastrowid,module);c.commit();return self.send(201,{'id':cursor.lastrowid})
             if path.startswith('/api/records/') and path.endswith('/retorno') and method=='POST':
                 rid=int(path.split('/')[-2]);data=self.body();old=c.execute('SELECT * FROM records WHERE id=?',(rid,)).fetchone()
-                if not old:return self.send(404,{'error':'Registro não encontrado.'})
+                if not old or old['module'] not in allowed:return self.send(404,{'error':'Registro não encontrado.'})
                 payload=merge_return(old,data);stamp=now()
                 cursor=c.execute("UPDATE records SET payload=?,status='Concluído',updated_at=?,returned_by=?,returned_at=?,version=version+1 WHERE id=? AND version=? AND status='Em aberto'",(json.dumps(payload,ensure_ascii=False),stamp,user['id'],stamp,rid,data.get('version')))
                 if cursor.rowcount!=1:return self.send(409,{'error':'Este registro mudou. Atualize a tela antes de registrar o retorno.'})
@@ -282,10 +306,11 @@ class Handler(BaseHTTPRequestHandler):
                     if cursor.rowcount!=1:return self.send(409,{'error':'Este registro mudou. Atualize a tela antes de editar.'})
                 audit(c,user,'Exclusão' if method=='DELETE' else 'Edição',rid,old['module']);c.commit();return self.send(200,{'ok':True})
             if path=='/api/users' and method=='GET':
-                rows=c.execute('SELECT id,name,username,role,active,created_at,last_seen,(active=1 AND last_seen>? AND EXISTS(SELECT 1 FROM sessions s WHERE s.user_id=users.id AND s.expires>?)) online FROM users ORDER BY id',(time.time()-ONLINE_WINDOW,time.time()))
-                return self.send(200,[{**dict(r),'online':bool(r['online'])} for r in rows])
+                rows=c.execute('SELECT id,name,username,role,active,created_at,last_seen,modules,(active=1 AND last_seen>? AND EXISTS(SELECT 1 FROM sessions s WHERE s.user_id=users.id AND s.expires>?)) online FROM users ORDER BY id',(time.time()-ONLINE_WINDOW,time.time()))
+                return self.send(200,[{**dict(r),'online':bool(r['online']),'modules':json.loads(r['modules']) if r['modules'] else None} for r in rows])
             if path=='/api/users' and method=='POST':
-                values=valid_user(self.body());cursor=c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*values,now()));audit(c,user,'Novo usuário',cursor.lastrowid);c.commit();return self.send(201,{'id':cursor.lastrowid})
+                data=self.body();values=valid_user(data);modules=valid_modules(data.get('modules'),values[3])
+                cursor=c.execute('INSERT INTO users(name,username,password,role,created_at,modules) VALUES(?,?,?,?,?,?)',(*values,now(),modules));audit(c,user,'Novo usuário',cursor.lastrowid);c.commit();return self.send(201,{'id':cursor.lastrowid})
             if path.startswith('/api/users/') and method=='PATCH':
                 uid=int(path.split('/')[-1]);data=self.body()
                 c.execute('BEGIN IMMEDIATE')
@@ -299,7 +324,8 @@ class Handler(BaseHTTPRequestHandler):
                 hashed=old['password']
                 if data.get('password'):
                     _,_,hashed,_=valid_user({'name':name,'username':old['username'],'password':data['password'],'role':role})
-                c.execute('UPDATE users SET name=?,role=?,active=?,password=? WHERE id=?',(name.strip(),role,active,hashed,uid))
+                modules=valid_modules(data['modules'],role) if 'modules' in data else (None if role=='admin' else old['modules'])
+                c.execute('UPDATE users SET name=?,role=?,active=?,password=?,modules=? WHERE id=?',(name.strip(),role,active,hashed,modules,uid))
                 c.execute('DELETE FROM sessions WHERE user_id=?',(uid,));audit(c,user,'Atualização de usuário',uid);c.commit();return self.send(200,{'ok':True})
             if path=='/api/audit' and method=='GET':return self.send(200,[dict(r) for r in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 1000')])
             if path=='/api/export' and method=='GET':

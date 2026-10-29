@@ -117,7 +117,7 @@ class IntegrationTest(unittest.TestCase):
         saved=next(r for r in self.req(op,'records')[1] if r['id']==rid)
         self.assertEqual((saved['status'],saved['returner'],saved['payload']['lacre_retorno'],saved['payload']['placa']),('Concluído','Usuario retorno-op','L2','ABC1D23'))
         self.assertEqual(self.req(op,url,'POST',{'payload':{'retorno':'2026-10-28T13:00','lacre_retorno':'L3'},'version':2},ot)[0],400)
-        pessoa=self.req(admin,'records','POST',{'module':'pessoas','payload':{'nome':'P','empresa':'E'}},at)[1]['id']
+        pessoa=self.req(admin,'records','POST',{'module':'pessoas','payload':{'nome':'P','documento':'123','empresa':'E','motivo':'Visita','area':'RH'}},at)[1]['id']
         self.assertEqual(self.req(op,f'records/{pessoa}/retorno','POST',{'payload':{},'version':1},ot)[0],400)
 
     def test_presence(self):
@@ -134,5 +134,43 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(op,'logout','POST',{},self.req(op,'session')[1]['user']['csrf'])[0],200)
         listed=users()
         self.assertFalse(listed['presenca-op']['online']);self.assertIsNotNone(listed['presenca-op']['last_seen'])
+
+    def test_operator_module_permissions(self):
+        with closing(app.connect()) as c, c:
+            c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':'Abas Admin','username':'abas-admin','password':'senha-abas-123','role':'admin'}),app.now()))
+        admin,op=self.client(),self.client()
+        self.assertEqual(self.req(admin,'login','POST',{'username':'abas-admin','password':'senha-abas-123'})[0],200)
+        at=self.req(admin,'session')[1]['user']['csrf']
+        new={'name':'So Pessoas','username':'so-pessoas','password':'senha-abas-123','role':'operador'}
+        self.assertEqual(self.req(admin,'users','POST',{**new,'modules':[]},at)[0],400)
+        self.assertEqual(self.req(admin,'users','POST',{**new,'modules':['inexistente']},at)[0],400)
+        uid=self.req(admin,'users','POST',{**new,'modules':['pessoas']},at)[1]['id']
+        rota=self.req(admin,'records','POST',{'module':'rotas','payload':{'rota':'R','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L','saida':'2026-10-28T10:00'}},at)[1]['id']
+        self.assertEqual(self.req(admin,'records','POST',{'module':'pessoas','payload':{'nome':'P','documento':'123','empresa':'E','motivo':'Visita','area':'RH'}},at)[0],201)
+        self.assertEqual(self.req(op,'login','POST',{'username':'so-pessoas','password':'senha-abas-123'})[0],200)
+        ot=self.req(op,'session')[1]['user']['csrf']
+        self.assertEqual([m['id'] for m in self.req(op,'bootstrap')[1]['schema']],['pessoas'])
+        self.assertEqual({r['module'] for r in self.req(op,'records')[1]},{'pessoas'})
+        self.assertEqual(self.req(op,'records','POST',{'module':'rotas','payload':{'rota':'R','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L','saida':'2026-10-28T10:00'}},ot)[0],403)
+        self.assertEqual(self.req(op,f'records/{rota}/retorno','POST',{'payload':{'retorno':'2026-10-28T12:00','lacre_retorno':'L2'},'version':1},ot)[0],404)
+        self.assertEqual(self.req(op,'records','POST',{'module':'pessoas','payload':{'nome':'Q','documento':'123','empresa':'E','motivo':'Visita','area':'RH'}},ot)[0],201)
+        listed={u['username']:u for u in self.req(admin,'users')[1]}
+        self.assertEqual(listed['so-pessoas']['modules'],['pessoas']);self.assertIsNone(listed['abas-admin']['modules'])
+        self.assertEqual(self.req(admin,f'users/{uid}','PATCH',{'modules':None},at)[0],200)
+        self.assertEqual(self.req(op,'login','POST',{'username':'so-pessoas','password':'senha-abas-123'})[0],200)
+        self.assertIn('rotas',[m['id'] for m in self.req(op,'bootstrap')[1]['schema']])
+
+    def test_people_have_single_document_and_no_status(self):
+        data={'module':'pessoas','status':'Em aberto','payload':{'nome':'P','documento':'CNH 123','empresa':'E','motivo':'Entrevista','area':'RH'}}
+        self.assertEqual(app.validate_record(data)[2],'Concluído')
+        with self.assertRaises(ValueError):app.validate_record({**data,'payload':{**data['payload'],'cpf':'1'}})
+        with self.assertRaises(ValueError):app.validate_record({**data,'payload':{**data['payload'],'documento':''}})
+        with closing(app.connect()) as c, c:
+            uid=c.execute('SELECT id FROM users LIMIT 1').fetchone()[0]
+            rid=c.execute("INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES('pessoas',?,'Concluído',?,?,?)",(json.dumps({'nome':'Antigo','cpf':'','rg':'RG 9','empresa':'E'}),uid,app.now(),app.now())).lastrowid
+        app.initialize()
+        with closing(app.connect()) as c:
+            payload=json.loads(c.execute('SELECT payload FROM records WHERE id=?',(rid,)).fetchone()[0])
+        self.assertEqual(payload,{'nome':'Antigo','documento':'RG 9','empresa':'E'})
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -40,19 +40,21 @@ Não existe senha padrão. No computador servidor, abra `redefinir_senha.bat`, i
 | Registrar retorno (registros em aberto) | Sim | Sim |
 | Editar, corrigir ou excluir | Sim | Não |
 | Ver quem está online e o último acesso | Sim | Não |
+
+**Abas por operador:** ao criar ou editar um operador, o administrador marca as abas liberadas (por exemplo, só Cadastro de pessoas). O operador só vê, cadastra e registra retorno nessas abas; a regra é aplicada pelo servidor. Com todas marcadas, abas criadas no futuro também ficam liberadas. Alterar as abas encerra as sessões do operador.
 | Criar e administrar usuários | Sim | Não |
 | Importar/exportar e baixar backup | Sim | Não |
 | Consultar auditoria e configurar unidade | Sim | Não |
 
 As restrições são aplicadas pelo servidor, inclusive em chamadas diretas à API. Dados de cadastro e autoria não dependem do navegador. O administrador não pode desativar ou remover seu próprio perfil administrativo; os usuários são desativados, preservando a autoria histórica dos registros. Alterar um usuário encerra as sessões dele.
 
-**Retorno:** em Veículos, Rotas, Equipamentos móveis e Chaves e armários, qualquer usuário pode usar **Registrar retorno** (ícone de seta na linha do registro) enquanto o registro estiver Em aberto. Só os campos de retorno vazios podem ser preenchidos; ao salvar, o registro vira Concluído e o nome de quem registrou o retorno fica gravado. Correções depois disso são feitas pelo administrador em **Editar**.
+**Retorno:** em Veículos, Rotas, Equipamentos móveis e Armários e escaninhos, qualquer usuário pode usar **Registrar retorno** (ícone de seta na linha do registro) enquanto o registro estiver Em aberto. Só os campos de retorno vazios podem ser preenchidos; ao salvar, o registro vira Concluído e o nome de quem registrou o retorno fica gravado. Correções depois disso são feitas pelo administrador em **Editar**.
 
 ## Módulos
 
-Veículos; rotas e lacres; saída de materiais; devoluções; equipamentos móveis; chaves e armários; cadastro de pessoas. Os lançamentos são feitos na página **Novo registro** do menu.
+Veículos; rotas; saída de materiais; devoluções; equipamentos móveis; armários e escaninhos; cadastro de pessoas. Os lançamentos são feitos na página **Novo registro** do menu.
 
-As abas por veículo foram reunidas em Veículos; as empresas de terceiros foram reunidas em Visitantes e terceiros. Consulte `MAPEAMENTO_PLANILHA.md` para o vínculo entre abas e módulos. Macros, fórmulas e histórico da planilha não são executados ou migrados automaticamente. Cadastro de pessoas é independente: nesta versão, não há preenchimento automático dos demais formulários a partir dele.
+As abas por veículo foram reunidas em Veículos. Consulte `MAPEAMENTO_PLANILHA.md` para o vínculo entre abas e módulos. Macros, fórmulas e histórico da planilha não são executados ou migrados automaticamente. Cadastro de pessoas é independente: nesta versão, não há preenchimento automático dos demais formulários a partir dele. Ele usa um único campo **Documento** (CPF, RG ou CNH, o que a pessoa apresentar) e não tem situação (em aberto/concluído).
 
 ## Operação diária
 
@@ -107,7 +109,7 @@ from pathlib import Path
 registro = {
     "module": "pessoas",
     "status": "Em aberto",
-    "payload": {"nome": "Pessoa de exemplo", "empresa": "Empresa de exemplo"}
+    "payload": {"nome": "Pessoa de exemplo", "documento": "CPF de exemplo", "empresa": "Empresa de exemplo", "motivo": "Visita", "area": "RH"}
 }
 Path("importar.json").write_text(
     json.dumps({"format": "gateflow.records.v1", "records": [registro]}, ensure_ascii=False),
