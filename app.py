@@ -11,21 +11,43 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import SimpleCookie
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
+import bases
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent  # bundled files (schema, static)
+# Folder of the .exe when packaged, so config.json and local data live beside it.
+APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else ROOT
+CONFIG = APP_DIR / 'config.json'
 SCHEMA = json.loads((ROOT / 'schema.json').read_text(encoding='utf-8'))
 MODULES = {m['id']: m for m in SCHEMA}
 STATUSES = ['Em aberto', 'Concluído', 'Ocorrência']
-DB = ROOT / 'dados' / 'portaria.db'
+DB_NAME = 'portaria.db'
+DB = APP_DIR / 'dados' / DB_NAME
+DEFAULT_PORT = 8780
+BACKUP_EVERY = 6 * 3600  # seconds between automatic backups
+BACKUP_KEEP = 60
+BACKUP_CHECK = 600  # how often the background thread checks whether a backup is due
 LOCK = threading.Lock()
 RATE = {}
 ONLINE_WINDOW = 120  # seconds without activity before a user shows as offline
 SEEN_THROTTLE = 30  # avoid a database write on every request
+UPPERCASE_KINDS = ('text', 'textarea')  # typed text is stored in uppercase; options, dates and numbers are not
+ESCANINHOS = 216  # doors drawn in static/escaninhos.svg
+ARMARIOS = 200  # doors per locker room in static/vestiario.svg (shared by both rooms)
+# Door maps of the "chaves" module: payload field, door count, locker room filter and settings key of blocked doors.
+DOOR_MAPS = {
+    'escaninhos': {'field': 'escaninho', 'total': ESCANINHOS, 'name': 'escaninho', 'vestiario': None, 'setting': 'escaninhos_bloqueados'},
+    'masculino': {'field': 'armario', 'total': ARMARIOS, 'name': 'armário masculino', 'vestiario': 'Masculino', 'setting': 'armarios_masculino_bloqueados'},
+    'feminino': {'field': 'armario', 'total': ARMARIOS, 'name': 'armário feminino', 'vestiario': 'Feminino', 'setting': 'armarios_feminino_bloqueados'},
+}
+
+class Conflict(ValueError):
+    """Valid request that clashes with the current data (answered with 409)."""
 
 def now():
     return dt.datetime.now(dt.timezone(dt.timedelta(hours=-3))).isoformat(timespec='seconds')
@@ -41,8 +63,11 @@ def initialize():
     # closing() is required: sqlite3's own context manager commits but never closes,
     # which keeps the file locked on Windows.
     with closing(connect()) as c, c:
+        if c.execute('PRAGMA quick_check').fetchone()[0]!='ok':
+            raise SystemExit(f'O banco {DB} está danificado. Não use o sistema e restaure a cópia mais recente da pasta {DB.parent / "backups"}.')
+        # Rollback journal, not WAL: WAL needs shared memory on one machine and breaks on network folders.
         c.executescript('''
-        PRAGMA journal_mode=WAL;
+        PRAGMA journal_mode=DELETE;
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT NOT NULL,
           username TEXT NOT NULL UNIQUE COLLATE NOCASE, password TEXT NOT NULL,
           role TEXT NOT NULL CHECK(role IN ('admin','operador')), active INTEGER NOT NULL DEFAULT 1,
@@ -58,6 +83,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         INSERT OR IGNORE INTO settings VALUES('unidade','CD Bahia');
         ''')
+        bases.create_tables(c)
         columns={r[1] for r in c.execute('PRAGMA table_info(records)')}
         if 'returned_by' not in columns:
             c.execute('ALTER TABLE records ADD COLUMN returned_by INTEGER REFERENCES users(id)')
@@ -84,6 +110,48 @@ def initialize():
         # Modules without a life cycle are always stored as concluded, so they never count as open.
         for module in [m['id'] for m in SCHEMA if m.get('status') is False]:
             c.execute("UPDATE records SET status='Concluído' WHERE module=? AND status!='Concluído'",(module,))
+        # Typed text is stored in uppercase; records saved before that rule are converted once.
+        if not c.execute("SELECT 1 FROM settings WHERE key='texto_maiusculo'").fetchone():
+            for rid,module,raw in c.execute('SELECT id,module,payload FROM records').fetchall():
+                if module not in MODULES:continue
+                keys={f[0] for f in MODULES[module]['fields'] if f[2] in UPPERCASE_KINDS}|{'observacoes'}
+                payload=json.loads(raw)
+                upper={k:(v.upper() if k in keys and isinstance(v,str) else v) for k,v in payload.items()}
+                if upper!=payload:c.execute('UPDATE records SET payload=? WHERE id=?',(json.dumps(upper,ensure_ascii=False),rid))
+            c.execute("INSERT INTO settings VALUES('texto_maiusculo','1')")
+
+def backup_database(force=False):
+    """Copies the database to <db folder>/backups unless a recent copy exists (any machine may have made it)."""
+    folder=DB.parent/'backups';folder.mkdir(exist_ok=True)
+    copies=sorted(folder.glob('portaria-*.db'))
+    if not force and copies and time.time()-copies[-1].stat().st_mtime<BACKUP_EVERY:return None
+    target=folder/f'portaria-{dt.datetime.now():%Y%m%d-%H%M%S}.db'
+    with closing(connect()) as source, closing(sqlite3.connect(target)) as dest:source.backup(dest)
+    for old in sorted(folder.glob('portaria-*.db'))[:-BACKUP_KEEP]:old.unlink(missing_ok=True)
+    return target
+
+def backup_loop():
+    while True:
+        try:
+            done=backup_database()
+            if done:print(f'Backup salvo em {done}',flush=True)
+        except (OSError,sqlite3.Error) as e:
+            print(f'ATENÇÃO: backup automático falhou ({e}). Verifique a pasta de rede.',flush=True)
+        time.sleep(BACKUP_CHECK)
+
+def configured_db(ask=input):
+    """Database path from config.json beside the app; asks for the network folder on first use."""
+    if CONFIG.exists():
+        folder=json.loads(CONFIG.read_text(encoding='utf-8')).get('pasta_banco','')
+    else:
+        folder=ask('Informe a pasta de rede do banco (ex.: \\\\servidor\\portaria): ').strip().strip('"')
+        if not folder:raise SystemExit('Nenhuma pasta informada.')
+        CONFIG.write_text(json.dumps({'pasta_banco':folder},ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    if not folder:raise SystemExit(f'Informe "pasta_banco" em {CONFIG}.')
+    path=Path(folder)
+    if not path.is_dir():
+        raise SystemExit(f'Pasta do banco não encontrada: {path}\nVerifique a conexão com a rede ou corrija "pasta_banco" em {CONFIG}.')
+    return path/DB_NAME
 
 def password_hash(value):
     salt = secrets.token_hex(16)
@@ -138,6 +206,7 @@ def validate_record(data):
         value = payload.get(key,'')
         if not isinstance(value,(str,int,float)) or isinstance(value,bool): raise ValueError(f'{label}: valor inválido.')
         value = str(value).strip()
+        if kind in UPPERCASE_KINDS: value = value.upper()
         if required and not value: raise ValueError(f'Preencha {label}.')
         if len(value)> (3000 if kind=='textarea' else 200): raise ValueError(f'{label}: texto muito longo.')
         if value and kind=='number':
@@ -158,7 +227,14 @@ def validate_record(data):
         if value and key=='placa':
             value=re.sub(r'[ -]','',value.upper())
             if not re.fullmatch(r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}',value): raise ValueError('Placa inválida. Use ABC1234 ou ABC1D23.')
+        if value and module=='chaves' and key in ('escaninho','armario'):
+            limit,name=(ESCANINHOS,'Escaninho') if key=='escaninho' else (ARMARIOS,'Armário')
+            if not re.fullmatch(r'[0-9]{1,3}',value) or not 1<=int(value)<=limit: raise ValueError(f'{name}: informe um número de 1 a {limit}.')
+            value=str(int(value))
         clean[key]=value
+    if module=='chaves':
+        if not clean.get('armario') and not clean.get('escaninho'): raise ValueError('Informe o armário ou o escaninho.')
+        if bool(clean.get('armario'))!=bool(clean.get('vestiario')): raise ValueError('Informe o vestiário e o número do armário juntos.')
     for a,b in [('entrada','saida'),('saida','retorno'),('retirada','devolucao')]:
         if clean.get(a) and clean.get(b) and clean[b]<clean[a]: raise ValueError('O retorno/saída não pode ser anterior à entrada/retirada.')
     if clean.get('km_final') and float(clean['km_final'])<float(clean['km_inicial']): raise ValueError('KM final menor que o KM inicial.')
@@ -183,6 +259,34 @@ def merge_return(old,data):
     if missing:raise ValueError('Preencha '+', '.join(missing)+'.')
     return clean
 
+def blocked_doors(c,mapa):
+    row=c.execute('SELECT value FROM settings WHERE key=?',(DOOR_MAPS[mapa]['setting'],)).fetchone()
+    return set(json.loads(row[0])) if row else set()
+
+def door_holder(c,mapa,number,exclude=None):
+    """Id of the active record linked to this door (open and without key return), if any."""
+    door=DOOR_MAPS[mapa]
+    sql="SELECT id FROM records WHERE module='chaves' AND status='Em aberto' AND json_extract(payload,?)=? AND COALESCE(json_extract(payload,'$.devolucao'),'')='' AND id IS NOT ?"
+    params=['$.'+door['field'],str(number),exclude]
+    if door['vestiario']:
+        sql+=" AND json_extract(payload,'$.vestiario')=?";params.append(door['vestiario'])
+    row=c.execute(sql,params).fetchone()
+    return row[0] if row else None
+
+def door_links(payload):
+    """(map, door number) pairs held by a validated "chaves" payload."""
+    links=[('escaninhos',int(payload['escaninho']))] if payload.get('escaninho') else []
+    if payload.get('armario'):links.append((payload['vestiario'].lower(),int(payload['armario'])))
+    return links
+
+def check_doors(c,module,payload,status,exclude=None):
+    """Call inside BEGIN IMMEDIATE so two computers cannot take the same door at once."""
+    if module!='chaves' or status!='Em aberto' or payload.get('devolucao'):return
+    for mapa,number in door_links(payload):
+        name=DOOR_MAPS[mapa]['name']
+        if number in blocked_doors(c,mapa):raise Conflict(f'O {name} {number} está bloqueado.')
+        if door_holder(c,mapa,number,exclude):raise Conflict(f'O {name} {number} já está ocupado. Libere-o antes de vincular outra pessoa.')
+
 def record_dict(row):
     d=dict(row);d['payload']=json.loads(d['payload']);return d
 
@@ -203,6 +307,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Security-Policy',"default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         for k,v in (headers or {}).items(): self.send_header(k,v)
         self.end_headers();self.wfile.write(body)
+    def xlsx_body(self):
+        length=int(self.headers.get('Content-Length','0'))
+        if not 0<length<=bases.MAX_UPLOAD: raise ValueError(f'Envie uma planilha .xlsx de até {bases.MAX_UPLOAD//1024//1024} MB.')
+        if self.headers.get('Content-Type','').split(';')[0] not in ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/octet-stream'):
+            raise ValueError('Envie um arquivo .xlsx.')
+        return self.rfile.read(length)
     def body(self):
         length=int(self.headers.get('Content-Length','0'))
         if not 0<length<=2_000_000: raise ValueError('Envie um JSON de até 2 MB.')
@@ -233,6 +343,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self): self.dispatch('DELETE')
     def dispatch(self,method):
         try: self.route(method)
+        except Conflict as e:self.send(409,{'error':str(e)})
         except ValueError as e:self.send(400,{'error':str(e)})
         except sqlite3.IntegrityError:self.send(409,{'error':'Login já utilizado ou conflito de dados.'})
         except Exception:
@@ -241,7 +352,7 @@ class Handler(BaseHTTPRequestHandler):
         path=urlsplit(self.path).path.rstrip('/') or '/'
         if not path.startswith('/api/'):
             if method!='GET':return self.send(405,{'error':'Método inválido.'})
-            files={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/logo.png':('logo.png','image/png')}
+            files={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/logo.png':('logo.png','image/png'),'/mapas.js':('mapas.js','text/javascript; charset=utf-8'),'/bases.js':('bases.js','text/javascript; charset=utf-8'),'/layout_cd.svg':('layout_cd.svg','image/svg+xml; charset=utf-8'),'/escaninhos.svg':('escaninhos.svg','image/svg+xml; charset=utf-8'),'/vestiario.svg':('vestiario.svg','image/svg+xml; charset=utf-8')}
             if path not in files:return self.send(404,{'error':'Não encontrado.'})
             f,ct=files[path];return self.send(200,raw=(ROOT/'static'/f).read_bytes(),ctype=ct)
         if method!='GET' and not self.allowed_origin():return self.send(403,{'error':'Origem não autorizada.'})
@@ -286,7 +397,13 @@ class Handler(BaseHTTPRequestHandler):
                 c.execute('DELETE FROM sessions WHERE token=?',(user['token'],));c.commit()
                 return self.send(200,{'ok':True},{'Set-Cookie':'gateflow_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'})
             if path=='/api/bootstrap' and method=='GET':
-                return self.send(200,{'schema':[m for m in SCHEMA if m['id'] in allowed],'settings':dict(c.execute('SELECT key,value FROM settings').fetchall()),'statuses':STATUSES})
+                return self.send(200,{'schema':[m for m in SCHEMA if m['id'] in allowed],'settings':dict(c.execute('SELECT key,value FROM settings').fetchall()),'statuses':STATUSES,'listas':bases.lists(c)})
+            if path=='/api/bases/colaboradores' and method=='GET':
+                return self.send(200,bases.find_colaboradores(c,parse_qs(urlsplit(self.path).query).get('q',[''])[0]))
+            if path=='/api/bases/terceirizados' and method=='GET':
+                query=parse_qs(urlsplit(self.path).query)
+                if 'documento' in query:return self.send(200,{'pessoa':bases.find_terceiro_document(c,query['documento'][0])})
+                return self.send(200,bases.find_terceiros(c,query.get('q',[''])[0]))
             if path=='/api/records' and method=='GET':
                 rows=c.execute('SELECT r.*,u.name creator,ru.name returner FROM records r JOIN users u ON u.id=r.created_by LEFT JOIN users ru ON ru.id=r.returned_by ORDER BY r.id DESC').fetchall()
                 return self.send(200,[record_dict(r) for r in rows if r['module'] in allowed])
@@ -294,6 +411,7 @@ class Handler(BaseHTTPRequestHandler):
                 data=self.body();module,payload,status=validate_record(data)
                 if module not in allowed:return self.send(403,{'error':'Você não tem acesso a esta aba.'})
                 if not admin and data.get('status','Em aberto')!='Em aberto':return self.send(403,{'error':'Operadores só podem cadastrar registros em aberto.'})
+                c.execute('BEGIN IMMEDIATE');check_doors(c,module,payload,status)
                 stamp=now();cursor=c.execute('INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)',(module,json.dumps(payload,ensure_ascii=False),status,user['id'],stamp,stamp))
                 audit(c,user,'Novo registro',cursor.lastrowid,module);c.commit();return self.send(201,{'id':cursor.lastrowid})
             if path.startswith('/api/records/') and path.endswith('/retorno') and method=='POST':
@@ -304,6 +422,14 @@ class Handler(BaseHTTPRequestHandler):
                 if cursor.rowcount!=1:return self.send(409,{'error':'Este registro mudou. Atualize a tela antes de registrar o retorno.'})
                 audit(c,user,'Retorno registrado',rid,old['module']);c.commit();return self.send(200,{'ok':True})
             if not admin:return self.send(403,{'error':'Apenas o administrador pode realizar esta ação.'})
+            if path=='/api/bases' and method=='GET':return self.send(200,bases.summary(c))
+            if path.startswith('/api/bases/') and method=='POST':
+                base=path.split('/')[-1]
+                if base not in bases.BASES:return self.send(404,{'error':'Base não encontrada.'})
+                data=self.xlsx_body();c.execute('BEGIN IMMEDIATE')
+                counts=bases.import_base(c,base,data,now())
+                audit(c,user,'Importação de base',base,f"{counts['novos']} novos, {counts['atualizados']} atualizados, {counts['ignorados']} ignorados");c.commit()
+                return self.send(200,counts)
             if path.startswith('/api/records/') and method in ('PATCH','DELETE'):
                 rid=int(path.split('/')[-1]);old=c.execute('SELECT * FROM records WHERE id=?',(rid,)).fetchone()
                 if not old:return self.send(404,{'error':'Registro não encontrado.'})
@@ -311,6 +437,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     data=self.body();module,payload,status=validate_record(data)
                     if module!=old['module']:raise ValueError('Não é permitido trocar o módulo de um registro.')
+                    c.execute('BEGIN IMMEDIATE');check_doors(c,module,payload,status,rid)
                     cursor=c.execute('UPDATE records SET payload=?,status=?,updated_at=?,version=version+1 WHERE id=? AND version=?',(json.dumps(payload,ensure_ascii=False),status,now(),rid,data.get('version')))
                     if cursor.rowcount!=1:return self.send(409,{'error':'Este registro mudou. Atualize a tela antes de editar.'})
                 audit(c,user,'Exclusão' if method=='DELETE' else 'Edição',rid,old['module']);c.commit();return self.send(200,{'ok':True})
@@ -350,7 +477,10 @@ class Handler(BaseHTTPRequestHandler):
                         if not isinstance(item,dict):raise ValueError('Registro deve ser um objeto.')
                         validated.append(validate_record(item))
                     except ValueError as e:raise ValueError(f'Linha {i+1}: {e}')
-                for module,payload,status in validated:
+                c.execute('BEGIN IMMEDIATE')
+                for i,(module,payload,status) in enumerate(validated):
+                    try:check_doors(c,module,payload,status)
+                    except Conflict as e:raise Conflict(f'Linha {i+1}: {e}')
                     stamp=now();c.execute('INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)',(module,json.dumps(payload,ensure_ascii=False),status,user['id'],stamp,stamp))
                 audit(c,user,'Importação JSON','registros',str(len(items)));c.commit();return self.send(201,{'imported':len(items)})
             if path=='/api/backup' and method=='GET':
@@ -360,6 +490,16 @@ class Handler(BaseHTTPRequestHandler):
                     target=Path(folder)/'backup.db'
                     with closing(sqlite3.connect(target)) as dest:c.backup(dest)
                     return self.send(200,raw=target.read_bytes(),ctype='application/octet-stream',headers={'Content-Disposition':'attachment; filename="gateflow-backup.db"'})
+            if path=='/api/mapas/bloqueio' and method=='POST':
+                data=self.body();mapa=data.get('mapa');number=data.get('numero');blocked=data.get('bloqueado')
+                if not isinstance(mapa,str) or mapa not in DOOR_MAPS:raise ValueError('Mapa inválido.')
+                door=DOOR_MAPS[mapa]
+                if type(number) is not int or not 1<=number<=door['total'] or type(blocked) is not bool:raise ValueError('Número ou situação inválida.')
+                c.execute('BEGIN IMMEDIATE')
+                if blocked and door_holder(c,mapa,number):raise Conflict(f"O {door['name']} {number} está ocupado. Libere-o antes de bloquear.")
+                current=blocked_doors(c,mapa);updated=sorted(current|{number} if blocked else current-{number})
+                c.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(door['setting'],json.dumps(updated)))
+                audit(c,user,'Bloqueio' if blocked else 'Desbloqueio',f"{door['name']} {number}");c.commit();return self.send(200,{'ok':True})
             if path=='/api/settings' and method=='PATCH':
                 value=self.body().get('unidade','')
                 if not isinstance(value,str) or not 2<=len(value.strip())<=80:raise ValueError('Nome da unidade inválido.')
@@ -379,20 +519,47 @@ def reset_password(username,ask):
         audit(c,None,'Redefinição de senha no servidor',u['id'])
     return u['username']
 
-def main():
+def is_running_here(url):
+    """True when the program answering on url is this system (identified by its Server header)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url+'/api/session',timeout=3) as r:return r.headers.get('Server','').startswith(Handler.server_version)
+    except OSError:return False
+
+class Server(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second copy bind the same port silently.
+    allow_reuse_address=False
+
+def main(open_browser=False):
     global DB
-    parser=argparse.ArgumentParser(description='GateFlow — Portaria logística')
-    parser.add_argument('--host',default='127.0.0.1');parser.add_argument('--port',default=8765,type=int)
-    parser.add_argument('--db',type=Path,default=DB)
+    parser=argparse.ArgumentParser(description='Prevenção de Perdas — Portaria logística')
+    parser.add_argument('--host',default='127.0.0.1');parser.add_argument('--port',type=int,help=f'Porta local (padrão: "porta" do config.json ou {DEFAULT_PORT}).')
+    parser.add_argument('--db',type=Path,help='Arquivo do banco; sem ele, usa config.json (ou dados/ ao rodar pelo código).')
     parser.add_argument('--redefinir-senha',metavar='LOGIN',help='Define uma nova senha para o usuário e encerra.')
-    args=parser.parse_args();DB=args.db.resolve();initialize()
+    parser.add_argument('--sem-navegador',action='store_true',help='Não abre o navegador ao iniciar.')
+    args=parser.parse_args();open_browser=open_browser and not args.sem_navegador
+    DB=(args.db or (configured_db() if getattr(sys,'frozen',False) or CONFIG.exists() else DB)).resolve()
+    print(f'Banco de dados: {DB}',flush=True);initialize()
     if args.redefinir_senha:
         import getpass
         try:print(f'Senha de {reset_password(args.redefinir_senha,getpass.getpass)} redefinida. Faça login com a nova senha.')
         except ValueError as e:raise SystemExit(str(e))
         return
-    server=ThreadingHTTPServer((args.host,args.port),Handler)
-    print(f'GateFlow: http://{args.host}:{args.port} — Ctrl+C para encerrar.',flush=True)
+    port=args.port or (json.loads(CONFIG.read_text(encoding='utf-8')).get('porta') if CONFIG.exists() else None) or DEFAULT_PORT
+    url=f'http://127.0.0.1:{port}'
+    try:server=Server((args.host,port),Handler)
+    except OSError:
+        if not is_running_here(url):
+            raise SystemExit(f'A porta {port} está em uso por outro programa. Defina outra no config.json, por exemplo "porta": {port+1}.')
+        # Already running on this computer: just bring the page up again.
+        print(f'O sistema já está aberto neste computador ({url}).')
+        if open_browser:
+            import webbrowser;webbrowser.open(url)
+        return
+    threading.Thread(target=backup_loop,daemon=True).start()
+    if open_browser:
+        import webbrowser;webbrowser.open(url)
+    print(f'Sistema no ar: {url} — mantenha esta janela aberta. Ctrl+C para encerrar.',flush=True)
     try:server.serve_forever()
     except KeyboardInterrupt:pass
     finally:server.server_close()
