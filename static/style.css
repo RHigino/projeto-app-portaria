@@ -139,3 +139,12 @@ input::placeholder,textarea::placeholder{text-transform:none}
 .aboutbody p{font-size:13px;line-height:1.65;color:#555868}
 .aboutbody h3{margin:18px 0 5px;font-size:12px;font-weight:600;color:var(--ink)}
 .aboutbody .aboutcredit{margin-top:20px;padding-top:14px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}
+.esclegend .terceirizado{background:#5b3fa8;border-color:#5b3fa8;color:#fff;font-size:9px;font-style:normal;font-weight:700;line-height:13px;text-align:center}
+.escterc{pointer-events:none}
+.escmap .armario[data-terceirizado]:not(:hover):not(:focus):not(.escflash) .porta{stroke:#5b3fa8;stroke-width:9}
+.escmap.vestiario .armario[data-terceirizado]:not(:hover):not(:focus):not(.escflash) .porta{stroke-width:5}
+.modalfoot{flex-wrap:wrap}
+.escterc rect{fill:#5b3fa8}
+.escterc text{fill:#fff;font-family:'DejaVu Sans',Arial,sans-serif;font-weight:700}
+.notice.terceiro{background:#efeafa;color:#47318a;margin-bottom:12px}
+.seqmotivo{margin-top:16px}

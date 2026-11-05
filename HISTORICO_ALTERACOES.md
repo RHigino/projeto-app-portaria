@@ -6,8 +6,8 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 
 - O projeto está em `Documents\projetospython\projeto-portariaprevencao\GateFlow`. Antes, ficava em `Downloads\GateFlow_Portaria_v1\GateFlow`.
 - O sistema está em implantação no CD, com o banco na pasta de rede.
-- Os testes automáticos passam: `python -m unittest` (24 testes).
-- **`dist\PrevencaoPerdas.exe` foi gerado em 05/11/2026, às 11:51**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado em uma pasta temporária, com banco descartável.
+- Os testes automáticos passam: `python -m unittest` (27 testes).
+- **`dist\PrevencaoPerdas.exe` foi gerado em 05/11/2026, às 14:59**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado em uma pasta temporária, com banco descartável.
 - **A pasta de rede ainda não recebeu esse `.exe`.** Até a troca, os computadores continuam com a versão anterior.
 
 ### Como está instalado no CD
@@ -41,7 +41,7 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 
 ### Próximos passos combinados
 
-1. Trocar o `.exe` da pasta de rede pelo de 04/11/2026, 08:48 (ver "Como atualizar o sistema").
+1. Trocar o `.exe` da pasta de rede pelo de 05/11/2026, 14:59 (ver "Como atualizar o sistema").
 2. Testar com dois computadores: cadastrar num, apertar F5 no outro, fechar um e ver o outro continuar.
 3. Criar os usuários da equipe e importar a planilha `Dados do projeto.xlsx` (o banco da rede recomeçou do zero). Antes, preencher as colunas Condutor e Auxiliar: enquanto estiverem vazias, esses campos ficam como texto livre.
 4. Opcional: pedir à TI que só os usuários do sistema acessem a pasta de rede. O banco tem nomes e CPFs, e ocultar a pasta não protege.
@@ -61,6 +61,35 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 - **Condutor e Motorista usam a mesma lista:** o mesmo motorista atende Rotas e Veículos. Não há filtro por condutor na tabela de registros, porque o usuário confirmou que não precisa.
 
 ---
+
+## 05/11/2026: feminino de 157 a 300, bloqueio em sequência e marca de terceirizado
+
+### Vestiário feminino
+
+- O feminino agora vai de **157 a 300** (144 armários, conjuntos 14 a 25). O masculino continua de 1 a 300, a pedido. Os números 157 a 300 existem nos dois vestiários.
+- O desenho continua um só (`static/vestiario.svg`): no feminino, a tela tira os conjuntos 1 a 13 e sobe os demais.
+- Novos vínculos, bloqueios e marcas fora da faixa são recusados.
+- **Registro antigo com armário feminino abaixo do 157:** continua valendo e pode ser editado sem trocar de armário e liberado pela tabela de registros, mas não aparece no mapa nem na ocupação.
+- Bloqueios antigos abaixo do 157 ficam guardados, sem efeito.
+
+### Bloquear sequência
+
+- Botão **Bloquear sequência** nos três mapas, só para o administrador. Informe do número, até o número e o motivo. O mesmo formulário desbloqueia, sem pedir motivo.
+- **Portas ocupadas ficam de fora** e aparecem no aviso. Portas já bloqueadas mantêm o motivo que tinham.
+- A auditoria grava uma linha por sequência, com a faixa pedida.
+
+### Marca de terceirizado
+
+- Ao clicar em uma porta, o administrador vê **Marcar como terceirizado** ou **Tirar marca de terceirizado**. Vale para armários e escaninhos.
+- A porta ganha borda roxa e a etiqueta **TERC**, e a janela da porta mostra o aviso. O operador vê a marca, mas não pode mudá-la.
+- **A marca só sinaliza**, a pedido: não muda a situação da porta, que continua livre, ocupada ou bloqueada, e não limita quem pode ser vinculado.
+- A marca fica na porta: continua depois que o cadastro é liberado, até o administrador tirar.
+
+### Testes
+
+- `test_feminino_lockers_start_at_157`, `test_door_sequence_block` e `test_door_terceirizado_mark` são novos. `test_vestiario_locker_maps` e `test_door_block_requires_reason` passaram a usar armários femininos a partir do 157.
+
+O `.exe` foi gerado com estas mudanças em 05/11/2026, às 14:59.
 
 ## 05/11/2026: 300 armários por vestiário e fim do campo Patrimônio
 

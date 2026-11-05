@@ -38,12 +38,13 @@ ONLINE_WINDOW = 120  # seconds without activity before a user shows as offline
 SEEN_THROTTLE = 30  # avoid a database write on every request
 UPPERCASE_KINDS = ('text', 'textarea')  # typed text is stored in uppercase; options, dates and numbers are not
 ESCANINHOS = 216  # doors drawn in static/escaninhos.svg
-ARMARIOS = 300  # doors per locker room in static/vestiario.svg (shared by both rooms)
+ARMARIOS = 300  # doors drawn in static/vestiario.svg (shared by both rooms)
+PRIMEIRO_ARMARIO_FEMININO = 157  # the women's room numbers 157 to 300; the men's room uses the whole drawing
 # Door maps of the "chaves" module: payload field, door count, locker room filter and settings key of blocked doors.
 DOOR_MAPS = {
-    'escaninhos': {'field': 'escaninho', 'total': ESCANINHOS, 'name': 'escaninho', 'vestiario': None, 'setting': 'escaninhos_bloqueados'},
-    'masculino': {'field': 'armario', 'total': ARMARIOS, 'name': 'armário masculino', 'vestiario': 'Masculino', 'setting': 'armarios_masculino_bloqueados'},
-    'feminino': {'field': 'armario', 'total': ARMARIOS, 'name': 'armário feminino', 'vestiario': 'Feminino', 'setting': 'armarios_feminino_bloqueados'},
+    'escaninhos': {'field': 'escaninho', 'first': 1, 'last': ESCANINHOS, 'name': 'escaninho', 'vestiario': None, 'setting': 'escaninhos_bloqueados', 'terceirizados': 'terceirizados_escaninhos'},
+    'masculino': {'field': 'armario', 'first': 1, 'last': ARMARIOS, 'name': 'armário masculino', 'vestiario': 'Masculino', 'setting': 'armarios_masculino_bloqueados', 'terceirizados': 'terceirizados_masculino'},
+    'feminino': {'field': 'armario', 'first': PRIMEIRO_ARMARIO_FEMININO, 'last': ARMARIOS, 'name': 'armário feminino', 'vestiario': 'Feminino', 'setting': 'armarios_feminino_bloqueados', 'terceirizados': 'terceirizados_feminino'},
 }
 
 class Conflict(ValueError):
@@ -275,6 +276,63 @@ def block_reasons(c,mapa):
     row=c.execute('SELECT value FROM settings WHERE key=?',(DOOR_MAPS[mapa]['setting']+'_motivos',)).fetchone()
     return json.loads(row[0]) if row else {}
 
+def door_map(mapa):
+    if not isinstance(mapa,str) or mapa not in DOOR_MAPS:raise ValueError('Mapa inválido.')
+    return DOOR_MAPS[mapa]
+
+def valid_door_number(door,number):
+    if type(number) is not int or not door['first']<=number<=door['last']:raise ValueError(f"Informe um número de {door['first']} a {door['last']}.")
+    return number
+
+def valid_block_reason(reason):
+    reason=reason.strip().upper() if isinstance(reason,str) else ''
+    if not reason:raise ValueError('Informe o motivo do bloqueio.')
+    if len(reason)>200:raise ValueError('O motivo do bloqueio pode ter até 200 caracteres.')
+    return reason
+
+def save_setting(c,key,value):
+    c.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(key,value))
+
+def set_doors_blocked(c,user,mapa,numbers,blocked,reason=''):
+    """Blocks or unblocks these doors. Call inside BEGIN IMMEDIATE, after checking the doors can change."""
+    door=DOOR_MAPS[mapa];chosen=set(numbers);current=blocked_doors(c,mapa)
+    reasons={k:v for k,v in block_reasons(c,mapa).items() if int(k) not in chosen}
+    if blocked:
+        stamp=now();reasons.update({str(n):{'motivo':reason,'por':user['name'],'em':stamp} for n in chosen})
+    save_setting(c,door['setting'],json.dumps(sorted(current|chosen if blocked else current-chosen)))
+    save_setting(c,door['setting']+'_motivos',json.dumps(reasons,ensure_ascii=False))
+
+def block_sequence(c,user,data):
+    """Applies one action to a range of doors, skipping the ones it cannot or need not change. Returns what happened to each."""
+    mapa=data.get('mapa');door=door_map(mapa);first=valid_door_number(door,data.get('de'));last=valid_door_number(door,data.get('ate'));blocked=data.get('bloqueado')
+    if first>last:raise ValueError('O número inicial não pode ser maior que o final.')
+    if type(blocked) is not bool:raise ValueError('Situação inválida.')
+    reason=valid_block_reason(data.get('motivo','')) if blocked else ''
+    c.execute('BEGIN IMMEDIATE')
+    numbers=range(first,last+1);current=blocked_doors(c,mapa)
+    occupied=[n for n in numbers if blocked and door_holder(c,mapa,n)]
+    unchanged=[n for n in numbers if n not in occupied and (n in current)==blocked]
+    changed=[n for n in numbers if n not in occupied and n not in unchanged]
+    if changed:
+        set_doors_blocked(c,user,mapa,changed,blocked,reason)
+        audit(c,user,'Bloqueio em sequência' if blocked else 'Desbloqueio em sequência',f"{door['name']} {first} a {last}",reason)
+    c.commit()
+    return {'alterados':changed,'ocupados':occupied,'ja_estavam':unchanged}
+
+def marked_terceirizados(c,mapa):
+    row=c.execute('SELECT value FROM settings WHERE key=?',(DOOR_MAPS[mapa]['terceirizados'],)).fetchone()
+    return set(json.loads(row[0])) if row else set()
+
+def mark_terceirizado(c,user,data):
+    """The mark only signals that the door belongs to a third party: status and linking do not change."""
+    mapa=data.get('mapa');door=door_map(mapa);number=valid_door_number(door,data.get('numero'));marked=data.get('terceirizado')
+    if type(marked) is not bool:raise ValueError('Situação inválida.')
+    c.execute('BEGIN IMMEDIATE')
+    current=marked_terceirizados(c,mapa)
+    save_setting(c,door['terceirizados'],json.dumps(sorted(current|{number} if marked else current-{number})))
+    audit(c,user,'Marca de terceirizado' if marked else 'Marca de terceirizado removida',f"{door['name']} {number}",'')
+    c.commit()
+
 def door_holder(c,mapa,number,exclude=None):
     """Id of the active record linked to this door (open and without key return), if any."""
     door=DOOR_MAPS[mapa]
@@ -295,7 +353,10 @@ def check_doors(c,module,payload,status,exclude=None):
     """Call inside BEGIN IMMEDIATE so two computers cannot take the same door at once."""
     if module!='chaves' or status!='Em aberto' or payload.get('devolucao'):return
     for mapa,number in door_links(payload):
-        name=DOOR_MAPS[mapa]['name']
+        door=DOOR_MAPS[mapa];name=door['name']
+        # A record saved before the room's range existed keeps its door, but nobody can take a new one out of the range.
+        kept=exclude is not None and door_holder(c,mapa,number)==exclude
+        if not door['first']<=number<=door['last'] and not kept:raise Conflict(f"O {name} vai de {door['first']} a {door['last']}.")
         if number in blocked_doors(c,mapa):raise Conflict(f'O {name} {number} está bloqueado.')
         if door_holder(c,mapa,number,exclude):raise Conflict(f'O {name} {number} já está ocupado. Libere-o antes de vincular outra pessoa.')
 
@@ -543,24 +604,17 @@ class Handler(BaseHTTPRequestHandler):
                     with closing(sqlite3.connect(target)) as dest:c.backup(dest)
                     return self.send(200,raw=target.read_bytes(),ctype='application/octet-stream',headers={'Content-Disposition':'attachment; filename="gateflow-backup.db"'})
             if path=='/api/mapas/bloqueio' and method=='POST':
-                data=self.body();mapa=data.get('mapa');number=data.get('numero');blocked=data.get('bloqueado')
-                if not isinstance(mapa,str) or mapa not in DOOR_MAPS:raise ValueError('Mapa inválido.')
-                door=DOOR_MAPS[mapa]
-                if type(number) is not int or not 1<=number<=door['total'] or type(blocked) is not bool:raise ValueError('Número ou situação inválida.')
-                reason=data.get('motivo','')
-                if blocked:
-                    reason=reason.strip().upper() if isinstance(reason,str) else ''
-                    if not reason:raise ValueError('Informe o motivo do bloqueio.')
-                    if len(reason)>200:raise ValueError('O motivo do bloqueio pode ter até 200 caracteres.')
+                data=self.body();mapa=data.get('mapa');door=door_map(mapa);number=valid_door_number(door,data.get('numero'));blocked=data.get('bloqueado')
+                if type(blocked) is not bool:raise ValueError('Situação inválida.')
+                reason=valid_block_reason(data.get('motivo','')) if blocked else ''
                 c.execute('BEGIN IMMEDIATE')
                 if blocked and door_holder(c,mapa,number):raise Conflict(f"O {door['name']} {number} está ocupado. Libere-o antes de bloquear.")
-                current=blocked_doors(c,mapa);updated=sorted(current|{number} if blocked else current-{number})
-                reasons={k:v for k,v in block_reasons(c,mapa).items() if k!=str(number)}
-                if blocked:reasons[str(number)]={'motivo':reason,'por':user['name'],'em':now()}
-                save="INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-                c.execute(save,(door['setting'],json.dumps(updated)))
-                c.execute(save,(door['setting']+'_motivos',json.dumps(reasons,ensure_ascii=False)))
-                audit(c,user,'Bloqueio' if blocked else 'Desbloqueio',f"{door['name']} {number}",reason if blocked else '');c.commit();return self.send(200,{'ok':True})
+                set_doors_blocked(c,user,mapa,[number],blocked,reason)
+                audit(c,user,'Bloqueio' if blocked else 'Desbloqueio',f"{door['name']} {number}",reason);c.commit();return self.send(200,{'ok':True})
+            if path=='/api/mapas/bloqueio-sequencia' and method=='POST':
+                return self.send(200,block_sequence(c,user,self.body()))
+            if path=='/api/mapas/terceirizado' and method=='POST':
+                mark_terceirizado(c,user,self.body());return self.send(200,{'ok':True})
             if path=='/api/settings' and method=='PATCH':
                 value=self.body().get('unidade','')
                 if not isinstance(value,str) or not 2<=len(value.strip())<=80:raise ValueError('Nome da unidade inválido.')

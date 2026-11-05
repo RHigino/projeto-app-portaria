@@ -210,13 +210,13 @@ class IntegrationTest(unittest.TestCase):
         saved=next(r for r in self.req(op,'records')[1] if r['id']==first['id'])
         self.assertEqual((saved['payload']['vestiario'],saved['payload']['armario']),('Masculino','12'))
         code,body=link('Masculino','12');self.assertEqual(code,409);self.assertIn('armário masculino 12',body['error'])
-        self.assertEqual(link('Feminino','12','Elisa')[0],201)  # same number, other locker room
+        self.assertEqual(link('Masculino','160','Lia')[0],201);self.assertEqual(link('Feminino','160','Elisa')[0],201)  # same number, other locker room
         self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':12,'bloqueado':True,'motivo':'Teste'},at)[0],409)  # occupied
         self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':301,'bloqueado':True},at)[0],400)
-        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':13,'bloqueado':True,'motivo':'Teste'},at)[0],200)
-        self.assertEqual(json.loads(self.req(op,'bootstrap')[1]['settings']['armarios_feminino_bloqueados']),[13])
-        code,body=link('Feminino','13');self.assertEqual(code,409);self.assertIn('bloqueado',body['error'])
-        self.assertEqual(link('Masculino','13','Fábio')[0],201)  # block is per locker room
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':161,'bloqueado':True,'motivo':'Teste'},at)[0],200)
+        self.assertEqual(json.loads(self.req(op,'bootstrap')[1]['settings']['armarios_feminino_bloqueados']),[161])
+        code,body=link('Feminino','161');self.assertEqual(code,409);self.assertIn('bloqueado',body['error'])
+        self.assertEqual(link('Masculino','161','Fábio')[0],201)  # block is per locker room
         code,both=link('Masculino','20','Gustavo','60');self.assertEqual(code,201)  # locker and escaninho in one record
         self.assertEqual(self.req(op,'records','POST',{'module':'chaves','payload':{'nome':'H','setor':'S','escaninho':'60','retirada':'2026-10-30T08:00'}},ot)[0],409)
         self.assertEqual(link('Masculino','20')[0],409)
@@ -232,7 +232,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':299,'bloqueado':True,'motivo':'Teste'},at)[0],200)
         self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':299,'bloqueado':False},at)[0],200)
         self.assertEqual(self.req(op,'records','POST',{'module':'chaves','payload':{'nome':'L','setor':'S','escaninho':'217','retirada':'2026-10-30T08:00'}},ot)[0],400)  # escaninhos stay at 216
-        self.assertEqual(app.DOOR_MAPS['escaninhos']['total'],216)
+        self.assertEqual(app.DOOR_MAPS['escaninhos']['last'],216)
 
     def test_door_block_requires_reason(self):  # named to run after the first-setup test, which needs an empty users table
         with closing(app.connect()) as c, c:
@@ -249,12 +249,12 @@ class IntegrationTest(unittest.TestCase):
         saved=reasons('escaninhos_bloqueados_motivos')['30']
         self.assertEqual((saved['motivo'],saved['por']),('FECHADURA QUEBRADA','MOTIVO ADMIN'));self.assertTrue(saved['em'])
         self.assertTrue(any(a['action']=='Bloqueio' and 'FECHADURA QUEBRADA' in a['details'] for a in self.req(admin,'audit')[1]))
-        self.assertEqual(block('feminino',30,motivo='Porta empenada')[0],200)  # each map keeps its own reasons
-        self.assertEqual(reasons('armarios_feminino_bloqueados_motivos')['30']['motivo'],'PORTA EMPENADA')
+        self.assertEqual(block('feminino',170,motivo='Porta empenada')[0],200)  # each map keeps its own reasons
+        self.assertEqual(reasons('armarios_feminino_bloqueados_motivos')['170']['motivo'],'PORTA EMPENADA')
         self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'escaninhos','numero':30,'bloqueado':False},at)[0],200)  # no reason to unblock
         self.assertNotIn('30',reasons('escaninhos_bloqueados_motivos'))
-        self.assertIn('30',reasons('armarios_feminino_bloqueados_motivos'))
-        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':30,'bloqueado':False},at)[0],200)  # leave the shared database as found
+        self.assertIn('170',reasons('armarios_feminino_bloqueados_motivos'))
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':170,'bloqueado':False},at)[0],200)  # leave the shared database as found
 
     def test_key_copy_loans(self):  # named to run after the first-setup test, which needs an empty users table
         with closing(app.connect()) as c, c:
@@ -441,6 +441,80 @@ class IntegrationTest(unittest.TestCase):
         threading.Thread(target=other.serve_forever,daemon=True).start()
         try:self.assertFalse(app.is_running_here(f'http://127.0.0.1:{other.server_port}'))
         finally:other.shutdown();other.server_close()
+
+    def door_clients(self,prefix):
+        """Logged-in admin and operator of the door tests: (admin, admin csrf, operator, operator csrf)."""
+        with closing(app.connect()) as c, c:
+            for login,role in ((prefix+'-admin','admin'),(prefix+'-op','operador')):
+                c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':login,'username':login,'password':'senha-portas-123','role':role}),app.now()))
+        admin,op=self.client(),self.client()
+        for client,login in ((admin,prefix+'-admin'),(op,prefix+'-op')):
+            self.assertEqual(self.req(client,'login','POST',{'username':login,'password':'senha-portas-123'})[0],200)
+        return admin,self.req(admin,'session')[1]['user']['csrf'],op,self.req(op,'session')[1]['user']['csrf']
+
+    def test_feminino_lockers_start_at_157(self):
+        admin,at,op,ot=self.door_clients('faixa')
+        def payload(room,number):return {'nome':'Pessoa','setor':'RH','vestiario':room,'armario':number,'retirada':'2026-10-30T08:00'}
+        link=lambda room,number:self.req(op,'records','POST',{'module':'chaves','payload':payload(room,number)},ot)
+        code,body=link('Feminino','156');self.assertEqual(code,409);self.assertIn('157 a 300',body['error'])
+        self.assertEqual(link('Feminino','157')[0],201)
+        self.assertEqual(link('Masculino','156')[0],201)  # the men's room keeps 1 to 300
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':156,'bloqueado':True,'motivo':'Teste'},at)[0],400)
+        self.assertEqual(self.req(admin,'mapas/terceirizado','POST',{'mapa':'feminino','numero':156,'terceirizado':True},at)[0],400)
+        with closing(app.connect()) as c, c:  # a record saved before the rule keeps working
+            uid=c.execute("SELECT id FROM users WHERE username='FAIXA-ADMIN'").fetchone()[0]
+            rid=c.execute('INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)',('chaves',json.dumps(payload('Feminino','10')),'Em aberto',uid,app.now(),app.now())).lastrowid
+        edit={'module':'chaves','status':'Em aberto','version':1}
+        self.assertEqual(self.req(admin,f'records/{rid}','PATCH',{**edit,'payload':payload('Feminino','11')},at)[0],409)  # cannot move to another door out of the range
+        self.assertEqual(self.req(admin,f'records/{rid}','PATCH',{**edit,'payload':{**payload('Feminino','10'),'setor':'TI'}},at)[0],200)  # same door is fine
+        self.assertEqual(self.req(op,f'records/{rid}/retorno','POST',{'payload':{'devolucao':'2026-10-30T18:00'},'version':2},ot)[0],200)  # and it can be released
+
+    def test_door_sequence_block(self):
+        admin,at,op,ot=self.door_clients('sequencia')
+        seq=lambda client,csrf,**data:self.req(client,'mapas/bloqueio-sequencia','POST',data,csrf)
+        settings=lambda:self.req(admin,'bootstrap')[1]['settings']
+        good={'mapa':'masculino','de':240,'ate':245,'bloqueado':True,'motivo':'reforma'}
+        self.assertEqual(seq(op,ot,**good)[0],403)
+        for bad in ({'mapa':'outro'},{'de':245,'ate':240},{'de':0},{'ate':301},{'de':'240'},{'ate':True},{'bloqueado':'sim'},{'motivo':'  '},{'motivo':'x'*201}):
+            self.assertEqual(seq(admin,at,**{**good,**bad})[0],400,bad)
+        self.assertEqual(seq(admin,at,**{**good,'mapa':'feminino','de':150,'ate':160})[0],400)  # women's room starts at 157
+        self.assertEqual(self.req(op,'records','POST',{'module':'chaves','payload':{'nome':'Ana','setor':'RH','vestiario':'Masculino','armario':'242','retirada':'2026-10-30T08:00'}},ot)[0],201)
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':243,'bloqueado':True,'motivo':'fechadura'},at)[0],200)
+        code,body=seq(admin,at,**good);self.assertEqual(code,200)
+        self.assertEqual((body['alterados'],body['ocupados'],body['ja_estavam']),([240,241,244,245],[242],[243]))
+        self.assertEqual(json.loads(settings()['armarios_masculino_bloqueados']),[240,241,243,244,245])
+        reasons=json.loads(settings()['armarios_masculino_bloqueados_motivos'])
+        self.assertEqual((reasons['240']['motivo'],reasons['243']['motivo']),('REFORMA','FECHADURA'))  # the older reason is kept
+        log=[a for a in self.req(admin,'audit')[1] if a['action']=='Bloqueio em sequência' and a['entity']=='armário masculino 240 a 245']
+        self.assertEqual(len(log),1);self.assertIn('REFORMA',log[0]['details'])
+        code,body=seq(admin,at,mapa='masculino',de=240,ate=245,bloqueado=False);self.assertEqual(code,200)  # no reason to unblock
+        self.assertEqual((body['alterados'],body['ocupados'],body['ja_estavam']),([240,241,243,244,245],[],[242,]))
+        self.assertEqual(json.loads(settings()['armarios_masculino_bloqueados']),[])
+        self.assertEqual(json.loads(settings()['armarios_masculino_bloqueados_motivos']),{})
+        code,body=seq(admin,at,mapa='escaninhos',de=210,ate=216,bloqueado=True,motivo='Teste');self.assertEqual((code,len(body['alterados'])),(200,7))
+        self.assertEqual(seq(admin,at,mapa='escaninhos',de=210,ate=216,bloqueado=False)[0],200)
+
+    def test_door_terceirizado_mark(self):
+        admin,at,op,ot=self.door_clients('terceiro')
+        mark=lambda client,csrf,**data:self.req(client,'mapas/terceirizado','POST',data,csrf)
+        marked=lambda key:json.loads(self.req(op,'bootstrap')[1]['settings'].get(key,'[]'))
+        good={'mapa':'masculino','numero':250,'terceirizado':True}
+        self.assertEqual(mark(op,ot,**good)[0],403)
+        for bad in ({'mapa':'outro'},{'numero':0},{'numero':301},{'numero':'250'},{'terceirizado':'sim'}):
+            self.assertEqual(mark(admin,at,**{**good,**bad})[0],400,bad)
+        self.assertEqual(mark(admin,at,**good)[0],200)
+        self.assertEqual(mark(admin,at,mapa='escaninhos',numero=200,terceirizado=True)[0],200)
+        self.assertEqual((marked('terceirizados_masculino'),marked('terceirizados_escaninhos'),marked('terceirizados_feminino')),([250],[200],[]))
+        self.assertTrue(any(a['action']=='Marca de terceirizado' and a['entity']=='armário masculino 250' for a in self.req(admin,'audit')[1]))
+        code,linked=self.req(op,'records','POST',{'module':'chaves','payload':{'nome':'Bia','setor':'RH','vestiario':'Masculino','armario':'250','retirada':'2026-10-30T08:00'}},ot)  # the mark only signals: anyone can be linked
+        self.assertEqual(code,201)
+        self.assertEqual(self.req(op,f"records/{linked['id']}/retorno",'POST',{'payload':{'devolucao':'2026-10-30T18:00'},'version':1},ot)[0],200)
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':250,'bloqueado':True,'motivo':'Teste'},at)[0],200)  # block is independent
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':250,'bloqueado':False},at)[0],200)
+        self.assertEqual(marked('terceirizados_masculino'),[250])
+        self.assertEqual(mark(admin,at,**{**good,'terceirizado':False})[0],200)
+        self.assertEqual(mark(admin,at,mapa='escaninhos',numero=200,terceirizado=False)[0],200)
+        self.assertEqual((marked('terceirizados_masculino'),marked('terceirizados_escaninhos')),([],[]))
 
     def test_text_fields_saved_uppercase(self):
         _,clean,_=app.validate_record({'module':'rotas','payload':{'rota':'rota feira','tipo':'Regular','placa':'abc1d23','condutor':'joão da silva','lacre':'lc-01','saida':'2026-10-30T08:00','observacoes':'chegou às 8h'}})
