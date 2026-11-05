@@ -12,7 +12,7 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 
 ### Como está instalado no CD
 
-- **Pasta de rede:** `\\dpspimp-bahia\PATRIMONIAL\BANCO DE DADOS - PORTARIA`. O usuário pode deixá-la oculta: o sistema funciona igual.
+- **Pasta de rede:** `\`\servidor\pasta-do-banco``. O usuário pode deixá-la oculta: o sistema funciona igual.
 - **Dentro dela:**
   - `PrevencaoPerdas.exe`: um só, para todos os computadores.
   - `config.json`: aponta para a própria pasta. Uma cópia pronta fica em `dist\config.json`.
@@ -207,7 +207,7 @@ O `dist\PrevencaoPerdas.exe` foi gerado de novo às 15:37 com estas mudanças.
   - a pasta de rede, quando não existe `config.json`;
   - a nova senha, no `redefinir_senha.bat` (`--redefinir-senha`). Nesse caso, ele usa a própria janela do `.bat`.
 - **Encerrar:** no Gerenciador de Tarefas, finalize "PrevencaoPerdas", ou desligue o computador. Faça isso em todos os computadores antes de trocar o `.exe` na pasta de rede.
-- Instalação adotada no CD: `.exe`, `config.json` e banco ficam em `\\dpspimp-bahia\PATRIMONIAL\BANCO DE DADOS - PORTARIA`, com um atalho na Área de Trabalho de cada computador.
+- Instalação adotada no CD: `.exe`, `config.json` e banco ficam em `\`\servidor\pasta-do-banco``, com um atalho na Área de Trabalho de cada computador.
 - Alterados: `iniciar.py` e `gerar_exe.bat`.
 - Testado com o `.exe`: o sistema respondeu sem nenhuma janela; a segunda abertura só reabriu o navegador; a pasta inexistente mostrou o aviso; a redefinição de senha abriu a janela para digitar.
 
