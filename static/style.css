@@ -89,14 +89,53 @@
 .escmap.feminino rect[fill="url(#frame)"]{fill:#ebccd7}
 .escmap.feminino path[fill="#9BA6A8"]{fill:#d9b0bf}
 .escmap.feminino rect[fill="#8E9B9D"]{fill:#cfa3b3}
-#recordform input[type=text],#recordform textarea,#returnform input[type=text]{text-transform:uppercase}
+/* Everything typed shows in uppercase, as the server stores it. Password, date, number and file inputs have their own type and stay out. */
+input:not([type]),input[type=text],textarea{text-transform:uppercase}
+input::placeholder,textarea::placeholder{text-transform:none}
 .baserow{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:13px 0;border-top:1px solid var(--line)}
 .baserow strong{font-size:12px;color:var(--ink)}
 .baserow small{display:block;font-size:10px;color:#80849a;margin-top:4px;line-height:1.5}
 .baserow .baseinfo{color:#4d5577;font-weight:600}
-.baserow .btn{flex-shrink:0}
+#base-result{font-size:11px;color:#4d5577;font-weight:600;margin:10px 0 14px;line-height:1.5}
+#base-result:empty{margin:0 0 14px}
 .basehint{display:block;font-size:10px;color:#4d6b8a;margin-top:6px;line-height:1.4}
 .basehint.warn{color:#b45309;font-weight:600}
 .warehouse{width:380px;height:auto;margin:-8px 0}
 .warehouse img{display:block;width:100%;height:auto;border-radius:12px;box-shadow:0 6px 20px #181c3112}
 @media(max-width:1150px){.hero .warehouse{width:270px}}
+
+.userchip{display:flex;align-items:center;gap:11px}
+.userchip strong{display:block;font-size:12px;color:var(--ink);font-weight:600;text-align:right}
+.userchip small{display:block;font-size:10px;color:#8c90a4;margin-top:3px;text-align:right}
+@media(max-width:600px){.userchip>div:first-child,.topright .divider{display:none}}
+.modalbody .notice+.detailgrid{margin-top:19px}
+.authnotice{background:#fdf1e1;color:#8a4b0b;border:1px solid #f3d3a8;border-radius:9px;padding:11px 13px;font-size:12px;line-height:1.5;margin:-6px 0 18px}
+
+.notice.copyout{background:#fdf1e1;color:#8a4b0b}
+.copybadge{margin-left:6px}
+.copyhist{margin-top:19px;border-top:1px solid var(--line);padding-top:15px}
+.copyhist>small{font-size:10px;color:#878ba0;display:block;margin-bottom:8px}
+.copyhist ul{margin:0;padding:0;list-style:none;display:grid;gap:9px}
+.copyhist li{display:grid;gap:3px;font-size:12px;color:#434866}
+.copyhist li small{font-size:11px;color:#878ba0}
+.copyhist li b{color:#b45309}
+.copybadge{display:flex;width:max-content;margin:6px 0 0}
+
+.modalbody .field+.field{margin-top:16px}
+/* In the two-column form the grid sets the spacing, so every field of a row starts at the same height. */
+.modalbody .formgrid{row-gap:35px}
+.modalbody .formgrid .field+.field{margin-top:0}
+.modalbody .formgrid input:not([type=checkbox]):not([type=radio]),.modalbody .formgrid select{height:47px}
+/* Name search panel: same look as the open list of a select. */
+.field{position:relative}
+.suggest{position:absolute;z-index:5;max-height:220px;overflow-y:auto;background:#fff;border:1px solid #767676;font-size:14px;color:var(--ink)}
+.suggest[hidden]{display:none}
+.suggestitem{padding:6px 18px;cursor:default;text-transform:uppercase}
+.suggestitem small{display:block;font-size:11px;color:#80849a}
+.suggestitem:hover,.suggestitem.active{background:#757575;color:#fff}
+.suggestitem:hover small,.suggestitem.active small{color:#fff}
+.footlink{padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.footlink:hover{color:var(--ink)}
+.aboutbody p{font-size:13px;line-height:1.65;color:#555868}
+.aboutbody h3{margin:18px 0 5px;font-size:12px;font-weight:600;color:var(--ink)}
+.aboutbody .aboutcredit{margin-top:20px;padding-top:14px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}

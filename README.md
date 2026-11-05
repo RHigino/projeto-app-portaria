@@ -58,16 +58,18 @@ As abas por veículo foram reunidas em Veículos. Consulte `MAPEAMENTO_PLANILHA.
 
 ### Mapa dos escaninhos e armários
 
-Na aba **Armários e Escaninhos**, o filtro no topo alterna entre **Escaninhos** (216 portas), **Armários masculino** e **Armários feminino** (200 cada; no cadastro, informe o Vestiário junto com o número do armário). O mapa mostra as portas: verde = livre, vermelho = ocupado (com o nome da pessoa), amarelo = bloqueado, e a ocupação em %. Clique numa porta para ver o cadastro vinculado, **Vincular colaborador** (porta livre) ou **Liberar escaninho**, que registra a devolução da chave e mantém o cadastro no histórico. Só o administrador bloqueia ou desbloqueia portas. O servidor impede dois cadastros ativos no mesmo escaninho, inclusive entre computadores diferentes. O mapa busca os dados ao abrir a aba e a cada 60 segundos. Detalhes em `HISTORICO_ALTERACOES.md`.
+Na aba **Armários e Escaninhos**, o filtro no topo alterna entre **Escaninhos** (216 portas), **Armários masculino** e **Armários feminino** (300 cada; no cadastro, informe o Vestiário junto com o número do armário). O mapa mostra as portas: verde = livre, vermelho = ocupado (com o nome da pessoa), amarelo = bloqueado, e a ocupação em %. Clique numa porta para ver o cadastro vinculado, **Vincular colaborador** (porta livre) ou **Liberar escaninho**, que registra a devolução da chave e mantém o cadastro no histórico. Só o administrador bloqueia ou desbloqueia portas. O servidor impede dois cadastros ativos no mesmo escaninho, inclusive entre computadores diferentes. O mapa busca os dados ao abrir a aba e a cada 60 segundos. Detalhes em `HISTORICO_ALTERACOES.md`.
 
-### Bases de colaboradores, terceirizados e fornecedores
+### Bases de colaboradores, terceirizados, fornecedores, placas e condutores
 
-Em **Configurações > Bases de dados (.xlsx)**, o administrador importa as planilhas (sempre `.xlsx`). Depois disso:
+Em **Configurações > Bases de dados (.xlsx)**, o administrador importa uma única planilha `.xlsx`, com as abas **Colaboradores**, **Acesso de Terceiros**, **Fornecedores** e **Placa do carro e caminhão**. Depois disso:
 - **Matrícula:** preenche nome e cargo nos formulários com colaborador.
 - **CPF/RG:** preenche nome e empresa no Cadastro de pessoas.
 - **Devoluções:** os campos Transportador, Fornecedor e Motivo viram listas para escolher.
+- **Rotas:** os campos Rota, Placa (caminhões), Condutor e Auxiliar viram listas para escolher.
+- **Veículos:** os campos Placa (carros) e Motorista (condutores) viram listas para escolher.
 
-Reimportar atualiza e acrescenta; nada é apagado. Detalhes e colunas esperadas em `HISTORICO_ALTERACOES.md`.
+Só as abas presentes no arquivo são atualizadas. Reimportar atualiza e acrescenta; nada é apagado. Detalhes e colunas esperadas em `HISTORICO_ALTERACOES.md`.
 
 ## Operação diária
 
@@ -87,7 +89,7 @@ Cada computador (portaria, notebook do administrador etc.) roda o próprio `Prev
 1. Gere o executável com `gerar_exe.bat` (precisa de Python e PyInstaller só nesta etapa). O resultado fica em `dist\PrevencaoPerdas.exe`.
 2. Crie a pasta de rede (ex.: `\\servidor\portaria`) com permissão de leitura e escrita para os usuários dos computadores. Para aproveitar os dados atuais, copie `dados\portaria.db` para ela com o sistema fechado.
 3. Copie `PrevencaoPerdas.exe` para cada computador. Na primeira abertura ele pergunta a pasta de rede e grava `config.json` ao lado do `.exe`; nas próximas, conecta sozinho. Para levar a configuração pronta, copie o `config.json` junto: `{"pasta_banco": "\\\\servidor\\portaria"}` (opcional: `"porta": 8780`).
-4. Mantenha a janela preta aberta enquanto usa; abrir o `.exe` de novo só reabre o navegador.
+4. O `.exe` roda **sem janela**: abre só o navegador e fica ligado em segundo plano até o computador desligar. Abrir o `.exe` de novo só reabre o navegador. Os erros (pasta fora do ar, porta em uso, banco danificado) aparecem numa caixa de aviso. Uma janela de texto só aparece para perguntar a pasta, quando não há `config.json`, e no `redefinir_senha.bat`. Para encerrar, finalize "PrevencaoPerdas" no Gerenciador de Tarefas. Isso é necessário em todos os computadores antes de trocar o `.exe` na pasta de rede.
 
 Proteções: o banco usa o modo clássico do SQLite (o modo WAL não funciona em pasta de rede), é verificado a cada abertura (danificado = o sistema não abre e indica os backups) e é copiado para `backups\` na pasta de rede ao abrir e a cada 6 horas (60 cópias). Se a pasta estiver fora do ar, o sistema avisa e não abre. Risco que permanece: queda da rede no meio de uma gravação pode danificar o arquivo; nesse caso, feche o sistema em todos os computadores e restaure a cópia mais recente de `backups\` como `portaria.db`. O teste com dois executáveis gravando ao mesmo tempo num caminho de rede passou sem perdas, mas não substitui o uso no ambiente do CD.
 

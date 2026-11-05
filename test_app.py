@@ -5,6 +5,7 @@ import zipfile
 from xml.sax.saxutils import escape
 import importlib.util
 import json
+import re
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -17,24 +18,29 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 import app
 
-def make_xlsx(rows,shared=True):
-    """Minimal .xlsx: strings in sharedStrings (or inline), ints as numeric cells."""
-    strings=[];cells=[]
-    for r,row in enumerate(rows,1):
-        xml=[]
-        for col,value in enumerate(row):
-            ref=chr(65+col)+str(r)
-            if isinstance(value,int):xml.append(f'<c r="{ref}"><v>{value}</v></c>')
-            elif shared:strings.append(value);xml.append(f'<c r="{ref}" t="s"><v>{len(strings)-1}</v></c>')
-            else:xml.append(f'<c r="{ref}" t="inlineStr"><is><t>{escape(value)}</t></is></c>')
-        cells.append(f'<row r="{r}">{"".join(xml)}</row>')
+def make_book(sheets,shared=True):
+    """Minimal .xlsx from {tab name: rows}: strings in sharedStrings (or inline), ints as numeric cells."""
+    strings=[];parts=[]
+    for rows in sheets.values():
+        cells=[]
+        for r,row in enumerate(rows,1):
+            xml=[]
+            for col,value in enumerate(row):
+                ref=chr(65+col)+str(r)
+                if isinstance(value,int):xml.append(f'<c r="{ref}"><v>{value}</v></c>')
+                elif shared:strings.append(value);xml.append(f'<c r="{ref}" t="s"><v>{len(strings)-1}</v></c>')
+                else:xml.append(f'<c r="{ref}" t="inlineStr"><is><t>{escape(value)}</t></is></c>')
+            cells.append(f'<row r="{r}">{"".join(xml)}</row>')
+        parts.append("".join(cells))
     ns='xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    tabs=''.join(f'<sheet name="{escape(name)}" sheetId="{i}" r:id="rId{i}"/>' for i,name in enumerate(sheets,1))
+    rels=''.join(f'<Relationship Id="rId{i}" Type="worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1,len(sheets)+1))
     out=io.BytesIO()
     with zipfile.ZipFile(out,'w') as z:
         z.writestr('[Content_Types].xml','<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
-        z.writestr('xl/workbook.xml',f'<workbook {ns} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Base" sheetId="1" r:id="rId1"/></sheets></workbook>')
-        z.writestr('xl/_rels/workbook.xml.rels','<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
-        z.writestr('xl/worksheets/sheet1.xml',f'<worksheet {ns}><sheetData>{"".join(cells)}</sheetData></worksheet>')
+        z.writestr('xl/workbook.xml',f'<workbook {ns} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{tabs}</sheets></workbook>')
+        z.writestr('xl/_rels/workbook.xml.rels',f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rels}</Relationships>')
+        for i,part in enumerate(parts,1):z.writestr(f'xl/worksheets/sheet{i}.xml',f'<worksheet {ns}><sheetData>{part}</sheetData></worksheet>')
         if shared:z.writestr('xl/sharedStrings.xml',f'<sst {ns}>'+''.join(f'<si><t>{escape(v)}</t></si>' for v in strings)+'</sst>')
     return out.getvalue()
 
@@ -141,7 +147,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(op,url,'POST',{'payload':{'retorno':'2026-10-28T12:00','lacre_retorno':'L2'},'version':9},ot)[0],409)
         self.assertEqual(self.req(op,url,'POST',{'payload':{'retorno':'2026-10-28T12:00','lacre_retorno':'L2'},'version':1},ot)[0],200)
         saved=next(r for r in self.req(op,'records')[1] if r['id']==rid)
-        self.assertEqual((saved['status'],saved['returner'],saved['payload']['lacre_retorno'],saved['payload']['placa']),('Concluído','Usuario retorno-op','L2','ABC1D23'))
+        self.assertEqual((saved['status'],saved['returner'],saved['payload']['lacre_retorno'],saved['payload']['placa']),('Concluído','USUARIO RETORNO-OP','L2','ABC1D23'))
         self.assertEqual(self.req(op,url,'POST',{'payload':{'retorno':'2026-10-28T13:00','lacre_retorno':'L3'},'version':2},ot)[0],400)
         pessoa=self.req(admin,'records','POST',{'module':'pessoas','payload':{'nome':'P','documento':'123','empresa':'E','motivo':'Visita','area':'RH'}},at)[1]['id']
         self.assertEqual(self.req(op,f'records/{pessoa}/retorno','POST',{'payload':{},'version':1},ot)[0],400)
@@ -163,12 +169,12 @@ class IntegrationTest(unittest.TestCase):
         saved=next(r for r in self.req(op,'records')[1] if r['id']==first['id'])
         self.assertEqual(saved['payload']['escaninho'],'7')  # stored without leading zeros
         code,body=link(op,ot,'7','Bruno');self.assertEqual(code,409);self.assertIn('ocupado',body['error'])
-        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'escaninhos','numero':7,'bloqueado':True},at)[0],409)  # occupied
-        self.assertEqual(self.req(op,'mapas/bloqueio','POST',{'mapa':'escaninhos','numero':8,'bloqueado':True},ot)[0],403)
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'escaninhos','numero':7,'bloqueado':True,'motivo':'Teste'},at)[0],409)  # occupied
+        self.assertEqual(self.req(op,'mapas/bloqueio','POST',{'mapa':'escaninhos','numero':8,'bloqueado':True,'motivo':'Teste'},ot)[0],403)
         for bad in ({'numero':0,'bloqueado':True},{'numero':'8','bloqueado':True},{'numero':8,'bloqueado':'sim'}):
             self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'escaninhos',**bad},at)[0],400,bad)
         self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'vestiario','numero':8,'bloqueado':True},at)[0],400)  # unknown map
-        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'escaninhos','numero':8,'bloqueado':True},at)[0],200)
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'escaninhos','numero':8,'bloqueado':True,'motivo':'Teste'},at)[0],200)
         self.assertEqual(json.loads(self.req(op,'bootstrap')[1]['settings']['escaninhos_bloqueados']),[8])
         code,body=link(op,ot,'8');self.assertEqual(code,409);self.assertIn('bloqueado',body['error'])
         other=link(admin,at,'9','Carla')[1]['id']
@@ -197,7 +203,7 @@ class IntegrationTest(unittest.TestCase):
             payload={'nome':name,'setor':'Expedição','vestiario':vestiario,'armario':number,'retirada':'2026-10-30T08:00'}
             if escaninho:payload['escaninho']=escaninho
             return self.req(op,'records','POST',{'module':'chaves','payload':payload},ot)
-        for vestiario,bad in (('Masculino','0'),('Masculino','201'),('Masculino','x1'),('','12'),('Unissex','12')):
+        for vestiario,bad in (('Masculino','0'),('Masculino','301'),('Masculino','x1'),('','12'),('Unissex','12')):
             self.assertEqual(link(vestiario,bad)[0],400,(vestiario,bad))
         self.assertEqual(self.req(op,'records','POST',{'module':'chaves','payload':{'nome':'P','setor':'S','vestiario':'Masculino','retirada':'2026-10-30T08:00'}},ot)[0],400)  # vestiário without number
         code,first=link('Masculino','012','Diego');self.assertEqual(code,201)
@@ -205,9 +211,9 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual((saved['payload']['vestiario'],saved['payload']['armario']),('Masculino','12'))
         code,body=link('Masculino','12');self.assertEqual(code,409);self.assertIn('armário masculino 12',body['error'])
         self.assertEqual(link('Feminino','12','Elisa')[0],201)  # same number, other locker room
-        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':12,'bloqueado':True},at)[0],409)  # occupied
-        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':201,'bloqueado':True},at)[0],400)
-        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':13,'bloqueado':True},at)[0],200)
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':12,'bloqueado':True,'motivo':'Teste'},at)[0],409)  # occupied
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'masculino','numero':301,'bloqueado':True},at)[0],400)
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':13,'bloqueado':True,'motivo':'Teste'},at)[0],200)
         self.assertEqual(json.loads(self.req(op,'bootstrap')[1]['settings']['armarios_feminino_bloqueados']),[13])
         code,body=link('Feminino','13');self.assertEqual(code,409);self.assertIn('bloqueado',body['error'])
         self.assertEqual(link('Masculino','13','Fábio')[0],201)  # block is per locker room
@@ -217,7 +223,74 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(op,f'records/{both["id"]}/retorno','POST',{'payload':{'devolucao':'2026-10-30T18:00'},'version':1},ot)[0],200)
         self.assertEqual(link('Masculino','20','Igor','60')[0],201)  # both freed by one release
         raw=urllib.request.urlopen(self.base+'/vestiario.svg').read().decode('utf-8')  # one drawing for both rooms
-        self.assertEqual(raw.count('class="armario"'),200);self.assertIn('id="armario-200"',raw);self.assertNotIn('<style',raw)
+        self.assertEqual(raw.count('class="armario"'),300);self.assertIn('id="armario-300"',raw);self.assertNotIn('<style',raw)
+        numbers=[int(n) for n in re.findall(r'class="armario" data-numero="(\d+)"',raw)]
+        self.assertEqual(numbers,list(range(1,301)))  # every door once, in order
+        towers=re.split(r'<g id="torre-\d+"',raw)[1:]
+        self.assertEqual([t.count('class="armario"') for t in towers],[12]*25)  # no shorter set: 3 columns and 4 rows in all of them
+        self.assertEqual(link('Masculino','300','Joana')[0],201);self.assertEqual(link('Feminino','300','Karla')[0],201)  # the new last door
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':299,'bloqueado':True,'motivo':'Teste'},at)[0],200)
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':299,'bloqueado':False},at)[0],200)
+        self.assertEqual(self.req(op,'records','POST',{'module':'chaves','payload':{'nome':'L','setor':'S','escaninho':'217','retirada':'2026-10-30T08:00'}},ot)[0],400)  # escaninhos stay at 216
+        self.assertEqual(app.DOOR_MAPS['escaninhos']['total'],216)
+
+    def test_door_block_requires_reason(self):  # named to run after the first-setup test, which needs an empty users table
+        with closing(app.connect()) as c, c:
+            c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':'Motivo Admin','username':'motivo-admin','password':'senha-motivo-1','role':'admin'}),app.now()))
+        admin=self.client()
+        self.assertEqual(self.req(admin,'login','POST',{'username':'motivo-admin','password':'senha-motivo-1'})[0],200)
+        at=self.req(admin,'session')[1]['user']['csrf']
+        block=lambda mapa,n,**extra:self.req(admin,'mapas/bloqueio','POST',{'mapa':mapa,'numero':n,'bloqueado':True,**extra},at)
+        reasons=lambda key:json.loads(self.req(admin,'bootstrap')[1]['settings'].get(key,'{}'))
+        for bad in ({},{'motivo':'   '},{'motivo':5},{'motivo':'x'*201}):
+            code,body=block('escaninhos',30,**bad);self.assertEqual(code,400,bad);self.assertIn('motivo',body['error'].lower())
+        self.assertNotIn(30,json.loads(self.req(admin,'bootstrap')[1]['settings'].get('escaninhos_bloqueados','[]')))
+        self.assertEqual(block('escaninhos',30,motivo='  fechadura quebrada ')[0],200)
+        saved=reasons('escaninhos_bloqueados_motivos')['30']
+        self.assertEqual((saved['motivo'],saved['por']),('FECHADURA QUEBRADA','MOTIVO ADMIN'));self.assertTrue(saved['em'])
+        self.assertTrue(any(a['action']=='Bloqueio' and 'FECHADURA QUEBRADA' in a['details'] for a in self.req(admin,'audit')[1]))
+        self.assertEqual(block('feminino',30,motivo='Porta empenada')[0],200)  # each map keeps its own reasons
+        self.assertEqual(reasons('armarios_feminino_bloqueados_motivos')['30']['motivo'],'PORTA EMPENADA')
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'escaninhos','numero':30,'bloqueado':False},at)[0],200)  # no reason to unblock
+        self.assertNotIn('30',reasons('escaninhos_bloqueados_motivos'))
+        self.assertIn('30',reasons('armarios_feminino_bloqueados_motivos'))
+        self.assertEqual(self.req(admin,'mapas/bloqueio','POST',{'mapa':'feminino','numero':30,'bloqueado':False},at)[0],200)  # leave the shared database as found
+
+    def test_key_copy_loans(self):  # named to run after the first-setup test, which needs an empty users table
+        with closing(app.connect()) as c, c:
+            for login,role,modules in (('copia-admin','admin',None),('copia-op','operador',None),('copia-rotas','operador','["rotas"]')):
+                c.execute('INSERT INTO users(name,username,password,role,created_at,modules) VALUES(?,?,?,?,?,?)',(*app.valid_user({'name':login.upper(),'username':login,'password':'senha-copia-123','role':role}),app.now(),modules))
+        admin,op,rotas=self.client(),self.client(),self.client()
+        for client,login in ((admin,'copia-admin'),(op,'copia-op'),(rotas,'copia-rotas')):
+            self.assertEqual(self.req(client,'login','POST',{'username':login,'password':'senha-copia-123'})[0],200)
+        at,ot,rt=(self.req(x,'session')[1]['user']['csrf'] for x in (admin,op,rotas))
+        rid=self.req(op,'records','POST',{'module':'chaves','payload':{'nome':'Joana','setor':'Expedição','escaninho':'150','retirada':'2026-10-30T08:00'}},ot)[1]['id']
+        record=lambda:next(r for r in self.req(admin,'records')[1] if r['id']==rid)
+        give=lambda client,csrf,target=rid,**data:self.req(client,f'records/{target}/copias','POST',data,csrf)
+        for bad in ({},{'motivo':'Roubou a chave'},{'motivo':'Esqueceu a chave','observacao':'x'*301}):
+            self.assertEqual(give(op,ot,**bad)[0],400,bad)
+        self.assertEqual(give(rotas,rt,motivo='Esqueceu a chave')[0],404)  # no access to the tab
+        code,copy=give(op,ot,motivo='Esqueceu a chave',observacao='devolve no fim do turno');self.assertEqual(code,201)
+        self.assertEqual(give(op,ot,motivo='Perdeu a chave')[0],409)  # one copy out at a time
+        loans=record()['copias'];self.assertEqual(len(loans),1)
+        self.assertEqual((loans[0]['motivo'],loans[0]['observacao'],loans[0]['entregue_por'],loans[0]['devolvida_em']),('Esqueceu a chave','DEVOLVE NO FIM DO TURNO','COPIA-OP',None))
+        code,body=self.req(op,f'records/{rid}/retorno','POST',{'payload':{'devolucao':'2026-10-30T18:00'},'version':1},ot)
+        self.assertEqual(code,409);self.assertIn('cópia',body['error'])  # release waits for the copy
+        edit={'module':'chaves','payload':{'nome':'Joana','setor':'Expedição','escaninho':'150','retirada':'2026-10-30T08:00','devolucao':'2026-10-30T18:00'},'version':1}
+        self.assertEqual(self.req(admin,f'records/{rid}','PATCH',edit,at)[0],409)  # nor can the admin close it by editing
+        self.assertEqual(self.req(rotas,f'copias/{copy["id"]}/devolucao','POST',{},rt)[0],404)
+        self.assertEqual(self.req(op,f'copias/{copy["id"]}/devolucao','POST',{},ot)[0],200)
+        self.assertEqual(self.req(op,f'copias/{copy["id"]}/devolucao','POST',{},ot)[0],409)  # already returned
+        returned=record()['copias'][0];self.assertTrue(returned['devolvida_em']);self.assertEqual(returned['devolvida_por'],'COPIA-OP')
+        self.assertEqual(record()['status'],'Em aberto')  # the main record stays open
+        self.assertEqual(give(op,ot,motivo='Perdeu a chave')[0],201)  # a new copy after the first came back
+        self.assertEqual(len(record()['copias']),2)
+        actions=[a['action'] for a in self.req(admin,'audit')[1]]
+        self.assertIn('Cópia de chave entregue',actions);self.assertIn('Cópia de chave devolvida',actions)
+        other=self.req(admin,'records','POST',{'module':'rotas','payload':{'rota':'R1','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L1','saida':'2026-10-30T08:00'}},at)[1]['id']
+        self.assertEqual(give(admin,at,other,motivo='Esqueceu a chave')[0],400)  # copies only exist for key records
+        self.assertEqual(self.req(admin,f'records/{rid}','DELETE',None,at)[0],200)  # deleting the record removes its copies
+        with closing(app.connect()) as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM copias_chave WHERE record_id=?',(rid,)).fetchone()[0],0)
 
     def test_password_reset_by_admin(self):
         with closing(app.connect()) as c, c:
@@ -243,7 +316,7 @@ class IntegrationTest(unittest.TestCase):
         admin,op=self.client(),self.client()
         for client,login in ((admin,'presenca-admin'),(op,'presenca-op')):
             self.assertEqual(self.req(client,'login','POST',{'username':login,'password':'senha-presenca-1'})[0],200)
-        users=lambda:{u['username']:u for u in self.req(admin,'users')[1]}
+        users=lambda:{u['username'].lower():u for u in self.req(admin,'users')[1]}
         listed=users()
         self.assertTrue(listed['presenca-admin']['online']);self.assertTrue(listed['presenca-op']['online'])
         self.assertFalse(listed['presenca-nunca']['online']);self.assertIsNone(listed['presenca-nunca']['last_seen'])
@@ -270,7 +343,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(op,'records','POST',{'module':'rotas','payload':{'rota':'R','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L','saida':'2026-10-28T10:00'}},ot)[0],403)
         self.assertEqual(self.req(op,f'records/{rota}/retorno','POST',{'payload':{'retorno':'2026-10-28T12:00','lacre_retorno':'L2'},'version':1},ot)[0],404)
         self.assertEqual(self.req(op,'records','POST',{'module':'pessoas','payload':{'nome':'Q','documento':'123','empresa':'E','motivo':'Visita','area':'RH'}},ot)[0],201)
-        listed={u['username']:u for u in self.req(admin,'users')[1]}
+        listed={u['username'].lower():u for u in self.req(admin,'users')[1]}
         self.assertEqual(listed['so-pessoas']['modules'],['pessoas']);self.assertIsNone(listed['abas-admin']['modules'])
         self.assertEqual(self.req(admin,f'users/{uid}','PATCH',{'modules':None},at)[0],200)
         self.assertEqual(self.req(op,'login','POST',{'username':'so-pessoas','password':'senha-abas-123'})[0],200)
@@ -293,9 +366,51 @@ class IntegrationTest(unittest.TestCase):
         material={'module':'materiais','payload':{'nome':'C','material':'Caixa','quantidade':2,'unidade':'Caixa','autorizacao':'G','liberacao':'Escrito','saida':'2026-10-28T10:00'}}
         self.assertEqual(app.validate_record(material)[2],'Concluído')
         with self.assertRaises(ValueError):app.validate_record({**material,'payload':{**material['payload'],'cargo':'X'}})
-        equipamento={'module':'equipamentos','payload':{'nome':'C','matricula':'1','equipamento':'Coletor','patrimonio':'P1','retirada':'2026-10-28T10:00'}}
+        equipamento={'module':'equipamentos','payload':{'nome':'C','matricula':'1','equipamento':'Coletor','retirada':'2026-10-28T10:00'}}
         self.assertEqual(app.validate_record(equipamento)[2],'Em aberto')  # still open until "Registrar retorno"
         self.assertFalse(app.MODULES['equipamentos'].get('showStatus',True))
+
+    def test_footer_credits_the_author_and_opens_about(self):
+        raw=urllib.request.urlopen(self.base+'/app.js').read().decode('utf-8')
+        self.assertIn('Desenvolvido por Rafael Higino',raw);self.assertIn('data-action="about"',raw);self.assertIn("case 'about':aboutModal()",raw)
+
+    def test_equipment_receiver_is_the_logged_in_user(self):
+        m=app.MODULES['equipamentos']
+        self.assertNotIn('recebedor',[f[0] for f in m['fields']]);self.assertEqual(m['return'],['devolucao']);self.assertEqual(m['returnerLabel'],'Recebido por')
+        with closing(app.connect()) as c, c:
+            for login in ('entrega-manha','recebe-tarde'):
+                c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':login,'username':login,'password':'senha-recebe-123','role':'operador'}),app.now()))
+        morning,afternoon=self.client(),self.client()
+        for client,login in ((morning,'entrega-manha'),(afternoon,'recebe-tarde')):
+            self.assertEqual(self.req(client,'login','POST',{'username':login,'password':'senha-recebe-123'})[0],200)
+        mt,tt=self.req(morning,'session')[1]['user']['csrf'],self.req(afternoon,'session')[1]['user']['csrf']
+        code,made=self.req(morning,'records','POST',{'module':'equipamentos','payload':{'nome':'Ana','matricula':'1','equipamento':'Chave','retirada':'2026-11-05T08:00'}},mt);self.assertEqual(code,201)
+        typed=self.req(afternoon,f'records/{made["id"]}/retorno','POST',{'payload':{'devolucao':'2026-11-05T14:00','recebedor':'Outro'},'version':1},tt)
+        self.assertEqual(typed[0],400)  # nobody types the receiver anymore
+        self.assertEqual(self.req(afternoon,f'records/{made["id"]}/retorno','POST',{'payload':{'devolucao':'2026-11-05T14:00'},'version':1},tt)[0],200)
+        record=next(r for r in self.req(afternoon,'records')[1] if r['id']==made['id'])
+        self.assertEqual((record['creator'],record['returner'],record['status']),('ENTREGA-MANHA','RECEBE-TARDE','Concluído'))
+        self.assertEqual(app.validate_record({'module':'equipamentos','payload':{'nome':'A','matricula':'1','equipamento':'C','retirada':'2026-11-05T08:00','recebedor':'Bia'}})[1]['recebedor'],'Bia')  # names typed before the change stay
+
+    def test_patrimonio_left_the_form_but_old_values_survive(self):
+        self.assertNotIn('patrimonio',[f[0] for f in app.MODULES['equipamentos']['fields']])
+        with closing(app.connect()) as c, c:
+            c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':'patrimonio-admin','username':'patrimonio-admin','password':'senha-patrimonio-1','role':'admin'}),app.now()))
+        admin=self.client();self.assertEqual(self.req(admin,'login','POST',{'username':'patrimonio-admin','password':'senha-patrimonio-1'})[0],200)
+        at=self.req(admin,'session')[1]['user']['csrf']
+        new={'module':'equipamentos','payload':{'nome':'Ana','matricula':'1','equipamento':'Coletor','retirada':'2026-10-28T10:00'}}
+        self.assertEqual(self.req(admin,'records','POST',new,at)[0],201)  # no longer required
+        old_payload={**new['payload'],'patrimonio':'P-77'}
+        with closing(app.connect()) as c, c:  # records saved while the field still existed
+            uid=c.execute("SELECT id FROM users WHERE username='patrimonio-admin'").fetchone()[0]
+            edited,returned=[c.execute("INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES('equipamentos',?,'Em aberto',?,?,?)",(json.dumps(old_payload),uid,app.now(),app.now())).lastrowid for _ in range(2)]
+        saved=lambda rid:next(r for r in self.req(admin,'records')[1] if r['id']==rid)['payload']
+        code,_=self.req(admin,f'records/{edited}','PATCH',{**new,'status':'Em aberto','version':1,'payload':{**new['payload'],'equipamento':'Rádio'}},at);self.assertEqual(code,200)  # the form no longer sends it
+        self.assertEqual((saved(edited)['equipamento'],saved(edited)['patrimonio']),('RÁDIO','P-77'))
+        code,_=self.req(admin,f'records/{returned}/retorno','POST',{'payload':{'devolucao':'2026-10-28T12:00'},'version':1},at);self.assertEqual(code,200)
+        self.assertEqual(saved(returned)['patrimonio'],'P-77')
+        self.assertEqual(app.validate_record({'module':'equipamentos','payload':old_payload})[1]['patrimonio'],'P-77')  # old JSON exports still import
+        with self.assertRaises(ValueError):app.validate_record({'module':'equipamentos','payload':{**new['payload'],'outro':'x'}})
 
     def test_network_ready_database(self):
         with closing(app.connect()) as c:
@@ -344,8 +459,28 @@ class IntegrationTest(unittest.TestCase):
             self.assertEqual((saved['nome'],saved['empresa'],saved['area']),('PEDRO ANTIGO','EMPRESA X','RH'))
             self.assertTrue(c.execute("SELECT 1 FROM settings WHERE key='texto_maiusculo'").fetchone())
 
-    def upload(self,client,csrf,base,data):
-        r=urllib.request.Request(self.base+'/api/bases/'+base,method='POST',data=data,headers={'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','X-CSRF-Token':csrf})
+    def test_user_and_unit_text_saved_uppercase(self):
+        with closing(app.connect()) as c, c:
+            c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':'gestão maiúscula','username':'gestor.caixa','password':'Senha-Caixa-123','role':'admin'}),app.now()))
+            c.execute("INSERT INTO users(name,username,password,role,created_at) VALUES('Login Antigo','login.antigo',?,'admin',?)",(app.password_hash('Senha-Antiga-123'),app.now()))
+            saved=c.execute("SELECT name,username FROM users WHERE username='gestor.caixa'").fetchone()
+        self.assertEqual((saved['name'],saved['username']),('GESTÃO MAIÚSCULA','GESTOR.CAIXA'))
+        self.assertEqual(self.req(self.client(),'login','POST',{'username':'login.antigo','password':'Senha-Antiga-123'})[0],200)  # logins saved before the rule still work
+        self.assertEqual(self.req(self.client(),'login','POST',{'username':'LOGIN.ANTIGO','password':'Senha-Antiga-123'})[0],200)
+        self.assertEqual(self.req(self.client(),'login','POST',{'username':'GESTOR.CAIXA','password':'senha-caixa-123'})[0],401)  # the password stays case sensitive
+        admin=self.client()
+        self.assertEqual(self.req(admin,'login','POST',{'username':'gestor.caixa','password':'Senha-Caixa-123'})[0],200)
+        csrf=self.req(admin,'session')[1]['user']['csrf']
+        uid=self.req(admin,'users','POST',{'name':'novo operador','username':'novo.operador','password':'senha-operador-1','role':'admin'},csrf)[1]['id']
+        self.assertEqual(self.req(admin,'users/'+str(uid),'PATCH',{'name':'operador editado'},csrf)[0],200)
+        self.assertEqual(self.req(admin,'settings','PATCH',{'unidade':'cd bahia'},csrf)[0],200)
+        with closing(app.connect()) as c:
+            user=c.execute('SELECT name,username FROM users WHERE id=?',(uid,)).fetchone()
+            self.assertEqual((user['name'],user['username']),('OPERADOR EDITADO','NOVO.OPERADOR'))
+            self.assertEqual(c.execute("SELECT value FROM settings WHERE key='unidade'").fetchone()[0],'CD BAHIA')
+
+    def upload(self,client,csrf,data):
+        r=urllib.request.Request(self.base+'/api/bases',method='POST',data=data,headers={'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','X-CSRF-Token':csrf})
         try:response=client.open(r)
         except urllib.error.HTTPError as e:response=e
         return response.code,json.loads(response.read())
@@ -359,12 +494,11 @@ class IntegrationTest(unittest.TestCase):
         at,ot=self.req(admin,'session')[1]['user']['csrf'],self.req(op,'session')[1]['user']['csrf']
         colaboradores=[['Base de colaboradores - CD'],['Situação','Matricula','Nome Completo','Data da Admissão','Data do Nascimento','Cargo','Gestor'],
                        ['Ativo',114993,'rafael higino santos',45000,33000,'supervisor de inventário','Fulano'],['Desligado',2001,'Maria Souza',44000,32000,'Conferente','Ciclano'],['','','','','','','']]
-        self.assertEqual(self.upload(op,ot,'colaboradores',make_xlsx(colaboradores))[0],403)
-        self.assertEqual(self.upload(admin,at,'clientes',make_xlsx(colaboradores))[0],404)
-        self.assertEqual(self.upload(admin,at,'colaboradores',b'nao e planilha')[0],400)
-        code,body=self.upload(admin,at,'terceirizados',make_xlsx(colaboradores));self.assertEqual(code,400);self.assertIn('CPF',body['error'])  # wrong spreadsheet: no nome/documentos
-        code,body=self.upload(admin,at,'colaboradores',make_xlsx(colaboradores));self.assertEqual(code,200)
-        self.assertEqual(body,{'novos':2,'atualizados':0,'ignorados':0})
+        self.assertEqual(self.upload(op,ot,make_book({'Colaboradores':colaboradores}))[0],403)
+        self.assertEqual(self.upload(admin,at,b'nao e planilha')[0],400)
+        code,body=self.upload(admin,at,make_book({'Terceirizados':colaboradores}));self.assertEqual(code,400);self.assertIn('CPF',body['error'])  # wrong columns: no CPF/RG
+        code,body=self.upload(admin,at,make_book({'Colaboradores':colaboradores}));self.assertEqual(code,200)
+        self.assertEqual(body['abas'],{'colaboradores':{'novos':2,'atualizados':0,'ignorados':0}})
         found=self.req(op,'bases/colaboradores?q=114993')[1]
         self.assertEqual(found[0],{'matricula':'114993','nome':'RAFAEL HIGINO SANTOS','cargo':'SUPERVISOR DE INVENTÁRIO','situacao':'ATIVO'})
         self.assertEqual([f['matricula'] for f in self.req(op,'bases/colaboradores?q=souz')[1]],['2001'])  # name search
@@ -373,18 +507,18 @@ class IntegrationTest(unittest.TestCase):
             self.assertEqual(c.execute('PRAGMA table_info(base_colaboradores)').fetchall()[-1][1],'updated_at')
             self.assertNotIn('NASCIMENTO',json.dumps([list(r) for r in c.execute('SELECT * FROM base_colaboradores')]))  # birth date and manager are not stored
         colaboradores[2][5]='Coordenador';colaboradores.append(['Ativo',3003,'Novo Colaborador',1,1,'Auxiliar','X'])
-        self.assertEqual(self.upload(admin,at,'colaboradores',make_xlsx(colaboradores,shared=False))[1],{'novos':1,'atualizados':2,'ignorados':0})
+        self.assertEqual(self.upload(admin,at,make_book({'Colaboradores':colaboradores},shared=False))[1]['abas']['colaboradores'],{'novos':1,'atualizados':2,'ignorados':0})
         self.assertEqual(self.req(op,'bases/colaboradores?q=114993')[1][0]['cargo'],'COORDENADOR')
         terceiros=[['Nome','CPF','RG','Empresa/Transportadora'],['João Motorista',1234567890,'','Transportes Bahia'],['Ana Ajudante','','12.345.678-9','Log Express'],['Sem Documento','','','X']]
-        self.assertEqual(self.upload(admin,at,'terceirizados',make_xlsx(terceiros))[1],{'novos':2,'atualizados':0,'ignorados':1})
+        self.assertEqual(self.upload(admin,at,make_book({'Terceirizados':terceiros}))[1]['abas']['terceirizados'],{'novos':2,'atualizados':0,'ignorados':1})
         self.assertEqual(self.req(op,'bases/terceirizados?documento=012.345.678-90')[1]['pessoa'],{'nome':'JOÃO MOTORISTA','empresa':'TRANSPORTES BAHIA'})  # leading zero restored
         self.assertEqual(self.req(op,'bases/terceirizados?documento=123456789')[1]['pessoa']['nome'],'ANA AJUDANTE')  # RG without punctuation
         self.assertIsNone(self.req(op,'bases/terceirizados?documento=999999999')[1]['pessoa'])
         self.assertEqual(self.req(op,'bases/terceirizados?q=moto')[1],[{'nome':'JOÃO MOTORISTA','empresa':'TRANSPORTES BAHIA'}])  # no documents in name search
         fornecedores=[['Transportador','Fornecedor','Motivo'],['Rodonaves','Distribuidora Nordeste','Avaria'],['Braspress','','Falta de pedido'],['rodonaves','Atacado Sul','avaria']]
-        self.assertEqual(self.upload(admin,at,'fornecedores',make_xlsx(fornecedores))[0],200)
+        self.assertEqual(self.upload(admin,at,make_book({'Fornecedores':fornecedores}))[0],200)
         listas=self.req(op,'bootstrap')[1]['listas']
-        self.assertEqual(listas,{'transportador':['BRASPRESS','RODONAVES'],'fornecedor':['ATACADO SUL','DISTRIBUIDORA NORDESTE'],'motivo':['AVARIA','FALTA DE PEDIDO']})
+        self.assertEqual({k:listas[k] for k in ('transportador','fornecedor','motivo')},{'transportador':['BRASPRESS','RODONAVES'],'fornecedor':['ATACADO SUL','DISTRIBUIDORA NORDESTE'],'motivo':['AVARIA','FALTA DE PEDIDO']})
         summary=self.req(admin,'bases')[1]
         self.assertEqual((summary['colaboradores']['total'],summary['terceirizados']['total'],summary['fornecedores']['motivo']),(3,2,2))
         self.assertEqual(self.req(op,'bases')[0],403)
@@ -393,11 +527,53 @@ class IntegrationTest(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec('openpyxl'),'openpyxl não instalado')
     def test_spreadsheet_saved_by_excel_library(self):
         import openpyxl
-        book=openpyxl.Workbook();sheet=book.active
+        book=openpyxl.Workbook();book.active.title='Placa do carro e caminhão'
+        book.active.append(['Placas dos Caminhoes','Placa do Carro','Condutor','Auxiliar']);book.active.append(['FHP-7342','RVK-0D84','',''])
+        sheet=book.create_sheet('Colaboradores')
         for row in (['Situação','Matricula','Nome Completo','Data da Admissão','Data do Nascimento','Cargo','Gestor'],['Ativo',55001,'Carla Dias','2020-01-02','1990-03-04','Analista','Gestor X']):
             sheet.append(row)
         buffer=io.BytesIO();book.save(buffer)
-        rows=app.bases.read_xlsx(buffer.getvalue())
-        self.assertEqual(rows[1][:3],['Ativo','55001','Carla Dias'])
+        tabs,ignored=app.bases.read_workbook(buffer.getvalue())
+        self.assertEqual(set(tabs),{'frota','colaboradores'});self.assertEqual(ignored,[])
+        self.assertEqual(tabs['colaboradores'][1][1][:3],['Ativo','55001','Carla Dias'])
+        self.assertEqual(tabs['frota'][0],'Placa do carro e caminhão')
+
+    def test_spreadsheet_workbook_with_all_tabs(self):
+        with closing(app.connect()) as c, c:
+            for login,role in (('book-admin','admin'),('book-op','operador')):
+                c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':login,'username':login,'password':'senha-base-1234','role':role}),app.now()))
+        admin,op=self.client(),self.client()
+        for client,login in ((admin,'book-admin'),(op,'book-op')):
+            self.assertEqual(self.req(client,'login','POST',{'username':login,'password':'senha-base-1234'})[0],200)
+        at=self.req(admin,'session')[1]['user']['csrf']
+        frota=[['Placas dos Caminhoes','Placa do Carro','Condutor','Auxiliar','Rota'],['GDS-8729','RVK-0D84','Zeca Condutor','Beto Auxiliar','Rota Feira'],['FUP- 4280','','',''],['SJP4B25','','',''],['fup4280','','',''],['PLACA ERRADA','','','']]
+        book={'Placa do carro e caminhao':frota,'Colaboradores':[['Situação','Matricula','Nome Completo','Cargo'],['Ativo',77001,'Livro Colaborador','Analista']],
+              'Acesso de Terceiros':[['Nome','CPF','RG','Empresa/Transportadora'],['Livro Terceiro',98765432100,'','Empresa Livro']],
+              'Fornecedores':[['Transportador','Fornecedor','Motivo'],['Livro Transporte','Livro Fornecedor','Livro Motivo']],'Rascunho':[['qualquer']]}
+        code,body=self.upload(admin,at,make_book(book));self.assertEqual(code,200,body)
+        self.assertEqual(body['ignoradas'],['Rascunho'])
+        self.assertEqual(body['abas']['frota'],{'novos':7,'atualizados':1,'ignorados':1})  # fup4280 repeats FUP- 4280; PLACA ERRADA is left out
+        self.assertEqual((body['abas']['colaboradores']['novos'],body['abas']['terceirizados']['novos'],body['abas']['fornecedores']['novos']),(1,1,3))
+        listas=self.req(op,'bootstrap')[1]['listas']
+        self.assertEqual(listas['placa_caminhao'],['FUP4280','GDS8729','SJP4B25']);self.assertEqual(listas['placa_carro'],['RVK0D84'])
+        self.assertEqual((listas['condutor'],listas['auxiliar'],listas['rota']),(['ZECA CONDUTOR'],['BETO AUXILIAR'],['ROTA FEIRA']))
+        self.assertEqual(self.req(op,'bases/colaboradores?q=77001')[1][0]['nome'],'LIVRO COLABORADOR')
+        self.assertEqual(self.req(op,'bases/terceirizados?documento=98765432100')[1]['pessoa']['nome'],'LIVRO TERCEIRO')
+        self.assertEqual(self.req(admin,'bases')[1]['frota'],{'placa_caminhao':3,'placa_carro':1,'condutor':1,'auxiliar':1,'rota':1})
+        # A plate from the list is accepted as it is by the record form.
+        op_csrf=self.req(op,'session')[1]['user']['csrf']
+        route={'module':'rotas','payload':{'rota':'R1','tipo':'Regular','placa':listas['placa_caminhao'][0],'condutor':listas['condutor'][0],'lacre':'L1','saida':'2026-10-28T10:00'}}
+        self.assertEqual(self.req(op,'records','POST',route,op_csrf)[0],201)
+        # Only the tab sent is touched.
+        code,body=self.upload(admin,at,make_book({'Colaboradores':[['Matricula','Nome Completo'],[77002,'So Colaborador']]}))
+        self.assertEqual((code,list(body['abas'])),(200,['colaboradores']))
+        self.assertEqual(self.req(op,'bootstrap')[1]['listas']['placa_caminhao'],['FUP4280','GDS8729','SJP4B25'])
+        # An error in one tab saves nothing and names the tab.
+        code,body=self.upload(admin,at,make_book({'Colaboradores':[['Matricula','Nome Completo'],[77003,'Nao Deve Gravar']],'Acesso de Terceiros':[['Coluna errada'],['x']]}))
+        self.assertEqual(code,400);self.assertIn('Acesso de Terceiros',body['error'])
+        self.assertEqual(self.req(op,'bases/colaboradores?q=77003')[1],[])
+        # Tabs that belong to no base, or two tabs for the same base, are refused.
+        code,body=self.upload(admin,at,make_book({'Planilha1':[['a']]}));self.assertEqual(code,400);self.assertIn('Colaboradores',body['error'])
+        code,body=self.upload(admin,at,make_book({'Colaboradores':[['a']],'Colaboradores antigos':[['a']]}));self.assertEqual(code,400);self.assertIn('Colaboradores antigos',body['error'])
 
 if __name__=='__main__':unittest.main(verbosity=2)

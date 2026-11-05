@@ -1,7 +1,7 @@
 'use strict';
 // Door maps of the "chaves" module (escaninhos and the two locker rooms), linked to open records.
 // Every SVG names its doors armario-001, armario-002…; only one map is in the page at a time.
-const ARMARIOS=200;
+const ARMARIOS=300;
 const MAPS={
   escaninhos:{tab:'Escaninhos',title:'Mapa dos escaninhos',noun:'escaninho',svg:'/escaninhos.svg',width:2464,total:216,field:'escaninho',
     name:{x:104,y:206,max:140},zoom:{start:0.52,minFit:0.38}},
@@ -23,6 +23,8 @@ const onMap=(r,m)=>Boolean(r.payload[m.field])&&(!m.vestiario||r.payload.vestiar
 
 function holders(key){const m=MAPS[key];return new Map(state.records.filter(r=>isActiveLink(r)&&onMap(r,m)).map(r=>[Number(r.payload[m.field]),r]))}
 function blockedDoors(key){try{return new Set(JSON.parse(state.settings[BLOCK_KEYS[key]]||'[]'))}catch{return new Set()}}
+// {door number: {motivo, por, em}}; doors blocked before reasons were required have no entry.
+function blockReasons(key){try{return JSON.parse(state.settings[BLOCK_KEYS[key]+'_motivos']||'{}')}catch{return {}}}
 function doorStatus(n,held,blocked){return held.has(n)?'ocupado':blocked.has(n)?'bloqueado':'livre'}
 function freeDoors(key){const held=holders(key),blocked=blockedDoors(key);return Array.from({length:MAPS[key].total},(_,i)=>i+1).filter(n=>doorStatus(n,held,blocked)==='livre')}
 function doorCounts(key){
@@ -35,14 +37,24 @@ const countsText=c=>`${plural(c.livre,'livre','livres')} · ${plural(c.ocupado,'
 const occupancy=key=>doorCounts(key).ocupado/MAPS[key].total*100;
 const percent=value=>value.toLocaleString('pt-BR',{maximumFractionDigits:1})+'%';
 
-// Number input of the record form; the free doors are offered as suggestions.
-function doorInput(key,attrs,value){
-  const total=key==='escaninho'?MAPS.escaninhos.total:ARMARIOS;
-  return `<input ${attrs} type="number" min="1" max="${total}" step="1" inputmode="numeric" list="livres-${key}" value="${esc(value)}"><datalist id="livres-${key}">${key==='escaninho'?freeDoors('escaninhos').map(n=>`<option value="${n}">`).join(''):''}</datalist>`;
+// Options of the door selects in the record form: the free doors, plus the one this record already holds.
+function doorOptions(doors,value,empty='Selecione…'){
+  const saved=value===''||value==null?null:Number(value);
+  const numbers=saved!==null&&!doors.includes(saved)?[...doors,saved].sort((a,b)=>a-b):doors;
+  return `<option value="">${empty}</option>${numbers.map(n=>`<option value="${n}" ${n===saved?'selected':''}>${n}</option>`).join('')}`;
 }
+function doorInput(key,attrs,value){
+  const options=key==='escaninho'?doorOptions(freeDoors('escaninhos'),value):doorOptions([],value,'Escolha o vestiário');
+  return `<select ${attrs} data-saved="${esc(value)}">${options}</select>`;
+}
+// The locker list depends on the room chosen; the saved locker only belongs to the saved room.
 function bindDoorForm(){
-  const room=$('#f-vestiario'),list=$('#livres-armario');if(!room||!list)return;
-  const fill=()=>{list.innerHTML=room.value?freeDoors(room.value.toLowerCase()).map(n=>`<option value="${n}">`).join(''):''};
+  const room=$('#f-vestiario'),door=$('#f-armario');if(!room||!door)return;
+  const savedRoom=room.value,saved=door.dataset.saved;
+  const fill=()=>{
+    const doors=room.value?freeDoors(room.value.toLowerCase()):[];
+    door.innerHTML=doorOptions(doors,room.value===savedRoom?saved:'',room.value?'Selecione…':'Escolha o vestiário');
+  };
   room.addEventListener('change',fill);fill();
 }
 
@@ -68,15 +80,16 @@ function nameLabel(door,m,name){
 
 function paintMap(){
   if(!$('#escmap svg'))return;
-  const key=mapView.current,m=MAPS[key],held=holders(key),blocked=blockedDoors(key),Noun=capital(m.noun);
+  const key=mapView.current,m=MAPS[key],held=holders(key),blocked=blockedDoors(key),reasons=blockReasons(key),Noun=capital(m.noun);
   for(let n=1;n<=m.total;n++){
     const door=document.getElementById(doorId(n));if(!door)continue;
     const status=doorStatus(n,held,blocked),r=held.get(n);
     door.dataset.status=status;
     door.querySelector('.escnome')?.remove();
-    const label=r?`${Noun} ${n}, ocupado por ${r.payload.nome}`:`${Noun} ${n}, ${status}`;
+    const why=status==='bloqueado'&&reasons[n]?`: ${reasons[n].motivo}`:'';
+    const label=r?`${Noun} ${n}, ocupado por ${r.payload.nome}`:`${Noun} ${n}, ${status}${why}`;
     door.setAttribute('aria-label',label);
-    const title=door.querySelector('title');if(title)title.textContent=r?`${Noun} ${n} — ${r.payload.nome}${r.payload.setor?' ('+r.payload.setor+')':''}`:label;
+    const title=door.querySelector('title');if(title)title.textContent=r?`${Noun} ${n} — ${r.payload.nome}${r.payload.setor?' ('+r.payload.setor+')':''}${openCopy(r)?' · cópia da chave em uso':''}`:label;
     if(r)nameLabel(door,m,r.payload.nome);
   }
   const counts=doorCounts(key),rate=counts.ocupado/m.total*100;
@@ -153,15 +166,49 @@ function doorModal(n){
   if(r){
     const fields=moduleBy('chaves').fields,rows=fields.filter(f=>r.payload[f[0]]).map(f=>`<div><small>${esc(f[1])}</small><p>${esc(f[2]==='datetime-local'?fmt(r.payload[f[0]]):r.payload[f[0]])}</p></div>`).join('');
     const others=otherLinks(r,key),note=others.length?`<div class="notice">Este cadastro também ocupa ${esc(others.join(' e '))}. Liberar encerra o cadastro inteiro e libera tudo.</div>`:'';
-    openModal(`${Noun} ${n} · ocupado`,'Cadastro vinculado a esta porta'+where+'.',`<div class="modalbody">${note}<div class="detailgrid">${rows}<div><small>Cadastrado por</small><p>${esc(r.creator)} · ${fmt(r.created_at)}</p></div></div></div>`,
-      `<div class="modalfoot">${close}<button class="btn" data-action="view" data-id="${r.id}">${icon('eye')} Registro completo</button>${canReturn(r)?`<button class="btn primary" data-action="return" data-id="${r.id}">${icon('return')} Liberar ${m.noun}</button>`:''}</div>`);
+    const copy=openCopy(r),release=canReturn(r)&&!copy?`<button class="btn primary" data-action="return" data-id="${r.id}">${icon('return')} Liberar ${m.noun}</button>`:'';
+    openModal(`${Noun} ${n} · ocupado`,'Cadastro vinculado a esta porta'+where+'.',`<div class="modalbody">${note}${copy?`<div class="notice copyout">${copyLine(copy)}<br>Para liberar, registre antes a devolução da cópia.</div>`:''}<div class="detailgrid">${rows}<div><small>Cadastrado por</small><p>${esc(r.creator)} · ${fmt(r.created_at)}</p></div></div>${copyHistory(r)}</div>`,
+      `<div class="modalfoot">${close}<button class="btn" data-action="view" data-id="${r.id}">${icon('eye')} Registro completo</button>${copyButton(r)}${release}</div>`);
     return;
   }
   const blocked=status==='bloqueado';
   const text=blocked?`Este ${m.noun} está bloqueado pelo administrador e não aceita novos vínculos até ser desbloqueado.`:`Este ${m.noun} está livre e pode ser vinculado a um colaborador.`;
   const adminButton=isAdmin()?`<button class="btn" data-action="${blocked?'esc-unblock':'esc-block'}" data-n="${n}">${icon('lock')} ${blocked?'Desbloquear':'Bloquear'}</button>`:'';
-  openModal(`${Noun} ${n} · ${status}`,'Situação atual da porta'+where+'.',`<div class="modalbody"><div class="notice">${text}</div></div>`,
+  const reason=blockReasons(key)[n];
+  const details=!blocked?'':reason?`<div class="detailgrid"><div class="wide"><small>Motivo do bloqueio</small><p>${esc(reason.motivo)}</p></div><div><small>Bloqueado por</small><p>${esc(reason.por)} · ${fmt(reason.em)}</p></div></div>`
+    :'<div class="detailgrid"><div class="wide"><small>Motivo do bloqueio</small><p>Não informado (bloqueado antes de o motivo ser obrigatório).</p></div></div>';
+  openModal(`${Noun} ${n} · ${status}`,'Situação atual da porta'+where+'.',`<div class="modalbody"><div class="notice">${text}</div>${details}</div>`,
     `<div class="modalfoot">${close}${adminButton}${blocked?'':`<button class="btn primary" data-action="esc-link" data-n="${n}">${icon('plus')} Vincular colaborador</button>`}</div>`);
+}
+
+// Spare keys: a copy handed to the person keeps the main record open until the copy comes back.
+const COPY_REASONS=['Esqueceu a chave','Perdeu a chave','Outro'];
+const openCopy=r=>(r.copias||[]).find(k=>!k.devolvida_em);
+const copyLine=k=>`Cópia da chave entregue em ${fmt(k.entregue_em)} por ${esc(k.entregue_por)} · ${esc(k.motivo)}${k.observacao?` · ${esc(k.observacao)}`:''}`;
+function copyHistory(r){
+  const list=r.copias||[];if(!list.length)return '';
+  const items=[...list].reverse().map(k=>`<li><span>${copyLine(k)}</span><small>${k.devolvida_em?`Devolvida em ${fmt(k.devolvida_em)} por ${esc(k.devolvida_por)}`:'<b>Em uso</b>'}</small></li>`).join('');
+  return `<div class="copyhist"><small>Cópias da chave (${list.length})</small><ul>${items}</ul></div>`;
+}
+function copyButton(r){
+  if(r.module!=='chaves'||r.status!=='Em aberto'||r.payload.devolucao)return '';
+  const copy=openCopy(r);
+  return copy?`<button class="btn primary" data-action="esc-copy-return" data-copy="${copy.id}">${icon('return')} Registrar devolução da cópia</button>`
+    :`<button class="btn" data-action="esc-copy-give" data-id="${r.id}">${icon('plus')} Entregar cópia da chave</button>`;
+}
+function copyForm(rid){
+  const r=state.records.find(x=>x.id===rid);
+  openModal('Entregar cópia da chave',`${r.payload.nome} · o cadastro continua em aberto.`,
+    `<div class="modalbody"><div class="field"><label for="f-copia-motivo">Motivo</label><select id="f-copia-motivo">${COPY_REASONS.map(x=>`<option>${esc(x)}</option>`).join('')}</select></div>
+    <div class="field"><label for="f-copia-obs">Observação (opcional)</label><textarea id="f-copia-obs" maxlength="300" rows="2" placeholder="Ex.: devolve no fim do turno"></textarea></div></div>`,
+    `<div class="modalfoot"><button class="btn" data-action="close">Cancelar</button><button class="btn primary" data-action="esc-copy-save" data-id="${rid}">${icon('plus')} Registrar entrega</button></div>`);
+}
+
+function blockForm(n){
+  const m=MAPS[mapView.current],where=m.vestiario?` · vestiário ${m.vestiario.toLowerCase()}`:'';
+  openModal(`Bloquear ${m.noun} ${n}`,'Informe por que esta porta vai ficar bloqueada'+where+'.',
+    `<div class="modalbody"><div class="field"><label for="f-motivo">Motivo do bloqueio</label><textarea id="f-motivo" maxlength="200" rows="3" required placeholder="Ex.: fechadura quebrada, aguardando manutenção"></textarea></div></div>`,
+    `<div class="modalfoot"><button class="btn" data-action="close">Cancelar</button><button class="btn primary" data-action="esc-block-save" data-n="${n}">${icon('lock')} Bloquear</button></div>`);
 }
 
 async function refreshMap(){await loadData();paintMap();const table=$('#record-table');if(table)table.innerHTML=recordTable()}
@@ -173,10 +220,22 @@ document.addEventListener('click',async e=>{
     switch(action){
       case 'esc-tab':if(button.dataset.map!==key){mapView.current=button.dataset.map;render()}break;
       case 'esc-link':$('#modal').close();recordForm(null,'chaves',m.vestiario?{vestiario:m.vestiario,armario:String(n)}:{escaninho:String(n)});break;
-      case 'esc-block':case 'esc-unblock':
+      case 'esc-block':$('#modal').close();blockForm(n);break;
+      case 'esc-block-save':case 'esc-unblock':{
+        const blocking=action==='esc-block-save',motivo=blocking?$('#f-motivo').value.trim():'';
+        if(blocking&&!motivo){toast('Informe o motivo do bloqueio.',true);$('#f-motivo').focus();break}
         button.disabled=true;
-        await api('mapas/bloqueio',{method:'POST',body:JSON.stringify({mapa:key,numero:n,bloqueado:action==='esc-block'})});
-        $('#modal').close();await refreshMap();toast(`${capital(m.noun)} ${n} ${action==='esc-block'?'bloqueado':'desbloqueado'}.`);break;
+        await api('mapas/bloqueio',{method:'POST',body:JSON.stringify({mapa:key,numero:n,bloqueado:blocking,...(blocking?{motivo}:{})})});
+        $('#modal').close();await refreshMap();toast(`${capital(m.noun)} ${n} ${blocking?'bloqueado':'desbloqueado'}.`);break}
+      case 'esc-copy-give':$('#modal').close();copyForm(Number(button.dataset.id));break;
+      case 'esc-copy-save':
+        button.disabled=true;
+        await api(`records/${button.dataset.id}/copias`,{method:'POST',body:JSON.stringify({motivo:$('#f-copia-motivo').value,observacao:$('#f-copia-obs').value.trim()})});
+        $('#modal').close();await refreshMap();toast('Cópia da chave entregue. O cadastro continua em aberto.');break;
+      case 'esc-copy-return':
+        button.disabled=true;
+        await api(`copias/${button.dataset.copy}/devolucao`,{method:'POST',body:'{}'});
+        $('#modal').close();await refreshMap();toast('Devolução da cópia registrada. O cadastro continua em aberto.');break;
       case 'esc-go':goToDoor();break;
       case 'esc-zoomin':stepZoom(1);break;
       case 'esc-zoomout':stepZoom(-1);break;

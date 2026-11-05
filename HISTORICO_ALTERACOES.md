@@ -2,22 +2,214 @@
 
 Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da mais recente para a mais antiga.
 
-## Situação atual (30/10/2026)
+## Situação atual (03/11/2026)
 
 - O projeto está em `Documents\projetospython\projeto-portariaprevencao\GateFlow`. Antes, ficava em `Downloads\GateFlow_Portaria_v1\GateFlow`.
-- O sistema ainda está em testes locais, antes de ser divulgado.
-- Os testes automáticos passam: `python -m unittest` (17 testes).
-- **O `PrevencaoPerdas.exe` ainda não foi gerado com as mudanças de 29 e 30/10.** Gere de novo com `gerar_exe.bat` antes de levar para os computadores.
+- O sistema está em implantação no CD, com o banco na pasta de rede.
+- Os testes automáticos passam: `python -m unittest` (24 testes).
+- **`dist\PrevencaoPerdas.exe` foi gerado em 05/11/2026, às 11:51**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado em uma pasta temporária, com banco descartável.
+- **A pasta de rede ainda não recebeu esse `.exe`.** Até a troca, os computadores continuam com a versão anterior.
+
+### Como está instalado no CD
+
+- **Pasta de rede:** `\\dpspimp-bahia\PATRIMONIAL\BANCO DE DADOS - PORTARIA`. O usuário pode deixá-la oculta: o sistema funciona igual.
+- **Dentro dela:**
+  - `PrevencaoPerdas.exe`: um só, para todos os computadores.
+  - `config.json`: aponta para a própria pasta. Uma cópia pronta fica em `dist\config.json`.
+  - `redefinir_senha.bat`
+  - `portaria.db`: o banco, criado sozinho na primeira abertura.
+  - `backups\`: criada sozinha. Uma cópia a cada 6 h, guardando as 60 últimas.
+- **Cada computador** tem só um atalho na Área de Trabalho apontando para o `.exe` da rede. Para criar um atalho com a pasta oculta, digite o caminho na barra de endereço do Explorador.
+- O endereço `127.0.0.1:8780` significa "este próprio computador". Cada computador roda a sua cópia do sistema, e todos usam o mesmo banco. Ver os mesmos dados em todos os computadores é o comportamento esperado.
+- Os arquivos da rede foram apagados por engano uma vez e recopiados. O banco da rede recomeçou do zero.
+- Guia ilustrado da implantação: https://claude.ai/artifact/69BdRCgdfQJmrvCkZQGj7K. **Está desatualizado em dois pontos:** ainda manda copiar o `.exe` para cada computador e manter a janela preta aberta.
+
+### Como atualizar o sistema
+
+1. Gere o `.exe` com `gerar_exe.bat`, ou peça para gerar. O resultado fica em `dist\PrevencaoPerdas.exe`.
+2. Em **todos** os computadores, feche o sistema: Gerenciador de Tarefas (Ctrl+Shift+Esc) › **PrevencaoPerdas** › **Finalizar tarefa**. Reiniciar o computador também serve.
+3. Copie o `.exe` novo por cima do antigo na pasta de rede. Se o Windows disser que o arquivo está em uso, algum computador ainda está com o sistema aberto.
+4. O banco, o `config.json` e os atalhos não mudam. Tabelas novas são criadas sozinhas ao abrir.
+
+### Desenvolvimento no mesmo computador
+
+- Rodando pelo código (`py -3 app.py`), o sistema usa o banco de testes `GateFlow\dados\portaria.db` e nunca o da rede, porque não existe `config.json` na pasta `GateFlow`. **Não copie o `config.json` para essa pasta.**
+- Rode o código em outra porta para não confundir com o sistema real: `py -3 app.py --port 8781`.
+  - `127.0.0.1:8780` é o sistema real, aberto pelo atalho.
+  - `127.0.0.1:8781` é o de testes.
+- Para conferir a tela, use um banco descartável e o Chrome sem janela controlado por script (CDP). O PyPI está bloqueado na rede, então não dá para instalar o Playwright.
 
 ### Próximos passos combinados
 
-1. Gerar o `.exe` atualizado e testar com o banco na pasta de rede do CD.
+1. Trocar o `.exe` da pasta de rede pelo de 04/11/2026, 08:48 (ver "Como atualizar o sistema").
+2. Testar com dois computadores: cadastrar num, apertar F5 no outro, fechar um e ver o outro continuar.
+3. Criar os usuários da equipe e importar a planilha `Dados do projeto.xlsx` (o banco da rede recomeçou do zero). Antes, preencher as colunas Condutor e Auxiliar: enquanto estiverem vazias, esses campos ficam como texto livre.
+4. Opcional: pedir à TI que só os usuários do sistema acessem a pasta de rede. O banco tem nomes e CPFs, e ocultar a pasta não protege.
+
+### Ideias oferecidas e ainda não feitas
+
+- Exportação em **Excel (.xlsx)** por módulo e período, para relatórios. "Exportar JSON" serve para integração com outros sistemas, não para relatório, e não é backup.
+- Atualizar o guia ilustrado para a instalação com o `.exe` na rede.
 
 ### Decisões registradas
 
 - **Reset do banco: não fazer por enquanto.** O banco tinha 48 KB, e o SQLite aguenta milhões de registros. Se um dia crescer, a ideia é arquivar só os registros concluídos antigos (com backup antes), sem apagar a auditoria nem os vínculos ativos.
+- **Cada computador roda o próprio `.exe`** e todos usam o mesmo banco na rede, em modo clássico do SQLite (sem WAL). Não haverá servidor central: a máquina da portaria desliga com as quedas de energia.
+- **Cópia da chave:** o armário não pode ser liberado enquanto a cópia não voltar, e só uma cópia fica em uso por vez. Combinado assim; pode mudar se o usuário pedir.
+- **Saída por inatividade:** 2 minutos, só para operadores. O administrador não sai sozinho, a pedido do usuário. Cuidado: ao se afastar de um computador que não é o seu, clique em **Sair**.
+- **Valor fora da lista:** não pode ser escolhido na tela, nem pelo administrador. A portaria anota, o administrador acrescenta na planilha, reimporta e lança o registro. A opção "Outra (digitar)" chegou a existir e saiu a pedido do usuário.
+- **Condutor e Motorista usam a mesma lista:** o mesmo motorista atende Rotas e Veículos. Não há filtro por condutor na tabela de registros, porque o usuário confirmou que não precisa.
 
 ---
+
+## 05/11/2026: 300 armários por vestiário e fim do campo Patrimônio
+
+### Armários
+
+- Masculino e feminino passaram de 200 para 300 armários. Os escaninhos seguem com 216.
+- Agora são 25 conjuntos iguais, de 12 portas (3 colunas e 4 andares), em `static/vestiario.svg`.
+- O conjunto 17 tinha 8 portas e passou a ter 12, a pedido. As portas 193 a 200 mudaram de lugar no desenho, mas os números não mudaram, e cadastros e bloqueios continuam valendo.
+- **A disposição dos conjuntos 17 a 25 é uma proposta e precisa ser confirmada com o vestiário real.**
+- `Mapa_Vestiario_001_a_200.svg` não foi alterado e continua sendo o desenho original de 200 portas.
+
+### Equipamentos móveis
+
+- O campo **Patrimônio / identificação** saiu do formulário e da tabela e deixou de ser obrigatório.
+- Os valores já salvos continuam no banco e nos arquivos exportados, sem aparecer na tela. Por isso o módulo tem `"retired":["patrimonio"]` no `schema.json`.
+- Sem isso, um equipamento antigo em aberto não conseguiria registrar o retorno, e editar o registro apagaria o valor.
+
+- O campo **Recebido por** saiu do cadastro e do registro de retorno. Quem recebe é o usuário logado que registra o retorno (`returned_by`).
+- A coluna "Recebido por" continua na tabela e é preenchida sozinha (`"returnerLabel"` no `schema.json`). Nomes digitados antes da mudança continuam aparecendo.
+- Uma devolução informada direto no cadastro ou na edição não passa por "Registrar retorno", então a coluna fica com "—".
+
+### Rodapé e janela Sobre
+
+- O rodapé mostra **Sobre** e **Desenvolvido por Rafael Higino**, inclusive em telas estreitas.
+- **Sobre** abre uma janela com o resumo do sistema, o que ele controla e como funciona.
+
+### Testes
+
+- `test_patrimonio_left_the_form_but_old_values_survive`, `test_equipment_receiver_is_the_logged_in_user` e `test_footer_credits_the_author_and_opens_about` são novos, e `test_vestiario_locker_maps` passou a cobrir a porta 300.
+
+## 04/11/2026: maiúsculas em todos os campos digitados
+
+- Todo campo de texto do sistema agora aparece em maiúsculas enquanto se digita. Entraram a busca, o login, o nome do usuário (no primeiro acesso e em Usuários) e o nome da unidade.
+- **Ficam como estão:**
+  - A senha, que diferencia maiúsculas de minúsculas e aparece só como pontos.
+  - Datas, números, arquivos e listas de opção.
+  - Os textos de exemplo dentro dos campos vazios, como "Buscar nome, placa, empresa ou documento…".
+- O servidor grava o nome do usuário, o login e a unidade em maiúsculas. Isso substitui a regra de 30/10/2026, que deixava o login de fora.
+- **Quem já tem login continua entrando:** o login não diferencia maiúsculas de minúsculas, então "maria.jose" e "MARIA.JOSE" são o mesmo usuário.
+- **Dados já gravados não foram convertidos:** nomes e logins de usuários já criados e o nome da unidade ("CD Bahia") mudam só quando forem salvos de novo. O login não pode ser editado na tela, então os já criados continuam como estão.
+- O nome no topo da tela continua no formato "Maria José", porque a tela o formata.
+- Novo teste: `test_user_and_unit_text_saved_uppercase`. Quatro testes antigos foram ajustados para a regra nova.
+- O `.exe` foi gerado com esta mudança em 04/11/2026, às 08:48.
+
+## 03/11/2026: planilha única, listas suspensas e alinhamento dos formulários
+
+Em **Configurações > Bases de dados (.xlsx)**, um único botão **Importar planilha .xlsx** substitui os três. O arquivo (`Dados do projeto.xlsx`) traz uma aba por base:
+
+| Aba | A aba é reconhecida se o nome tiver | Colunas | Uso no sistema |
+|---|---|---|---|
+| Colaboradores | `COLABORADOR` | Situação, Matricula, Nome Completo, Cargo | Igual a antes. |
+| Acesso de Terceiros | `TERCEIR` | Nome, CPF, RG, Empresa/Transportadora | Igual a antes. |
+| Fornecedores | `FORNECEDOR` | Transportador, Fornecedor, Motivo | Igual a antes. |
+| Placa do carro e caminhão | `PLACA` | Placas dos Caminhoes, Placa do Carro, Condutor, Auxiliar, Rota | **Rotas:** Rota, Placa (caminhões), Condutor e Auxiliar. **Veículos:** Placa (carros) e Motorista (lista de condutores). |
+
+**Regras da importação:**
+- Maiúsculas e acentos no nome da aba não importam. Abas com outros nomes não são usadas e aparecem citadas no resultado.
+- Só as abas presentes no arquivo são atualizadas. As outras bases ficam como estão.
+- Erro em uma aba cancela a importação inteira, e a mensagem cita a aba. Duas abas da mesma base também são recusadas.
+- Os limites são 10 MB por arquivo e 20.000 linhas por aba. Reimportar continua sem apagar nada.
+- **Placas** entram no formato gravado nos cadastros, sem traço nem espaço: `FUP- 4280` vira `FUP4280`. Placa inválida fica fora da lista e é contada como ignorada.
+
+**Como os campos aparecem:**
+- Toda lista suspensa tem o mesmo formato de Tipo de rota:
+  - **Rotas:** Rota, Placa, Condutor e Auxiliar.
+  - **Veículos:** Placa e Motorista.
+  - **Devoluções:** Transportador, Fornecedor e Motivo.
+  - **Armários e Escaninhos:** Escaninho e Armário, só com as portas livres. O Armário depende do Vestiário escolhido.
+- **Valor fora da lista não pode ser escolhido** (decisão do usuário). A portaria anota, o administrador acrescenta na planilha e reimporta, e o registro é lançado depois.
+- Sem lista importada, os campos da planilha continuam como texto. Ao editar um registro com valor fora da lista, o valor continua disponível.
+- **Nome** (colaborador e terceiro) continua com busca ao digitar, porque a base pode ter milhares de pessoas. O painel de resultados tem o visual da lista aberta e aceita digitar um nome fora da base.
+- O preenchimento automático do navegador foi desligado nos formulários de registro e de retorno.
+- **Alinhamento:** os campos de cada linha começam na mesma altura e têm 47 px. A causa era a regra `.modalbody .field+.field`, que dava margem a todos os campos menos o primeiro.
+
+**Servidor:**
+- `POST /api/bases` recebe o arquivo e devolve `{abas: {base: contagens}, ignoradas: [...]}`. O endereço antigo `POST /api/bases/<base>` saiu.
+- A auditoria grava uma linha por aba importada.
+- As novas listas ficam em `base_listas`, nos tipos `placa_caminhao`, `placa_carro`, `condutor`, `auxiliar` e `rota`.
+- Novo teste: `test_spreadsheet_workbook_with_all_tabs`.
+
+**Arquivos alterados:** `bases.py`, `app.py`, `static/bases.js`, `static/mapas.js`, `static/app.js`, `static/style.css`, `test_app.py` e `README.md`.
+
+**Executável e testes:**
+- `dist\PrevencaoPerdas.exe` gerado às 19:38 (9,2 MB).
+- Os 20 testes automáticos passam.
+- Uma cópia isolada do `.exe`, sem `config.json` e com banco descartável, passou pelo roteiro no Chrome sem janela: importação, listas de todos os módulos, alinhamento das linhas, portas livres, busca por nome e salvar e editar registros.
+- **Não testado:**
+  - a planilha real no `.exe`;
+  - o `.exe` na pasta de rede;
+  - a lista nativa aberta, que não aparece no Chrome sem janela. O usuário aprovou a tela no servidor de testes.
+
+## 30/10/2026: cópia da chave (Armários e Escaninhos)
+
+Quando o colaborador esquece ou perde a chave, a portaria entrega uma cópia **no mesmo cadastro**. O cadastro principal continua em aberto.
+
+- **Entregar:** clique na porta ocupada (ou abra o registro completo) › **Entregar cópia da chave**. Informe o motivo (Esqueceu a chave, Perdeu a chave ou Outro) e, se quiser, uma observação de até 300 caracteres, gravada em MAIÚSCULAS.
+- **Devolver:** **Registrar devolução da cópia**. A cópia ganha a baixa e o cadastro continua em aberto.
+- **Enquanto a cópia não volta:**
+  - o cadastro não pode ser liberado, nem pelo retorno nem pela edição do administrador (aviso 409);
+  - a janela da porta mostra um aviso em laranja e esconde o botão Liberar;
+  - na tabela, o nome ganha a etiqueta **Cópia em uso**.
+- Uma cópia em uso por vez. Depois que ela volta, outra pode ser entregue.
+- O histórico de cópias aparece na janela da porta e no registro completo.
+- Qualquer usuário com acesso à aba pode entregar e receber a cópia. As duas ações ficam na auditoria ("Cópia de chave entregue" e "Cópia de chave devolvida").
+- **Servidor:**
+  - Nova tabela `copias_chave`, criada sozinha ao abrir.
+  - Endereços: `POST /api/records/<id>/copias` (`{motivo, observacao}`) e `POST /api/copias/<id>/devolucao`.
+  - `GET /api/records` traz `copias` em cada cadastro de Armários e Escaninhos.
+  - Excluir o cadastro apaga as cópias dele.
+- Novo teste: `test_key_copy_loans`.
+- `dist\PrevencaoPerdas.exe` gerado de novo às 16:21.
+
+## 30/10/2026: saída por inatividade, motivo do bloqueio e nome no topo
+
+### Saída automática por inatividade
+
+- Depois de **2 minutos** sem mexer o mouse, o teclado ou a tela, o sistema sai sozinho e volta para o login.
+- O login mostra o aviso "Sua sessão foi encerrada após 2 minutos sem uso".
+- O tempo fica na constante `IDLE_MS`, no fim de `static/app.js`.
+- **O administrador não sai sozinho.** A saída por inatividade vale só para operadores. O `.exe` foi gerado de novo às 16:25.
+- Um formulário aberto e não salvo se perde nessa saída.
+
+### Motivo do bloqueio (escaninhos e armários)
+
+- **Bloquear** agora abre uma janela com o campo **Motivo do bloqueio**. É obrigatório, aceita até 200 caracteres e é gravado em MAIÚSCULAS.
+- Ao clicar numa porta bloqueada aparecem o motivo, quem bloqueou e quando. O motivo também aparece ao passar o mouse sobre a porta.
+- Portas bloqueadas antes desta versão mostram "Não informado".
+- **Servidor:** `POST /api/mapas/bloqueio` exige `motivo` quando `bloqueado` é verdadeiro. Os motivos ficam em `settings`, em `<chave do mapa>_motivos` (por exemplo, `escaninhos_bloqueados_motivos`), no formato `{"número": {"motivo", "por", "em"}}`. Desbloquear apaga o motivo. A auditoria do bloqueio guarda o motivo.
+- Novo teste: `test_door_block_requires_reason`.
+
+### Nome no topo
+
+- O canto superior direito mostra o nome (primeiro e último, ex.: "Rafael Higino") e o perfil (**Administrador** ou **Operador**) ao lado das iniciais.
+- As iniciais agora usam o primeiro e o último nome (RH), e não mais os dois primeiros.
+- No celular, aparecem só as iniciais.
+
+O `dist\PrevencaoPerdas.exe` foi gerado de novo às 15:37 com estas mudanças.
+
+## 30/10/2026: executável sem a janela preta
+
+- O `PrevencaoPerdas.exe` agora é gerado com `--noconsole`. Ao abrir, aparece só o navegador, e o sistema fica rodando em segundo plano.
+- **Erros** (pasta de rede fora do ar, porta em uso, banco danificado) aparecem numa **caixa de aviso** do Windows, em vez de sumirem.
+- **Uma janela de texto ainda abre quando precisa perguntar algo:**
+  - a pasta de rede, quando não existe `config.json`;
+  - a nova senha, no `redefinir_senha.bat` (`--redefinir-senha`). Nesse caso, ele usa a própria janela do `.bat`.
+- **Encerrar:** no Gerenciador de Tarefas, finalize "PrevencaoPerdas", ou desligue o computador. Faça isso em todos os computadores antes de trocar o `.exe` na pasta de rede.
+- Instalação adotada no CD: `.exe`, `config.json` e banco ficam em `\\dpspimp-bahia\PATRIMONIAL\BANCO DE DADOS - PORTARIA`, com um atalho na Área de Trabalho de cada computador.
+- Alterados: `iniciar.py` e `gerar_exe.bat`.
+- Testado com o `.exe`: o sistema respondeu sem nenhuma janela; a segunda abertura só reabriu o navegador; a pasta inexistente mostrou o aviso; a redefinição de senha abriu a janela para digitar.
 
 ## 30/10/2026: textos em MAIÚSCULAS
 
@@ -38,6 +230,8 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 - **Tamanho:** a área do desenho passou de 280 para 380 px de largura (270 px em telas menores). No celular, o desenho continua escondido.
 
 ## 30/10/2026: bases importadas por planilha (.xlsx)
+
+> Em 03/11/2026, as três importações separadas viraram uma planilha única, e o endereço de importação mudou. Veja a seção daquela data.
 
 Em **Configurações > Bases de dados (.xlsx)**, o administrador importa três planilhas, sempre em `.xlsx`. As bases ficam **dentro do banco**, e não como arquivo solto na pasta de rede:
 - O Excel não trava o arquivo.

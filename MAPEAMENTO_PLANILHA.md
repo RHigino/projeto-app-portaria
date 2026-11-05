@@ -17,7 +17,7 @@ A estrutura foi levantada diretamente do arquivo XLSB anexado. As 23 abas foram 
 | Rotas_03_05, RotasExtras | Rotas e lacres | Rota, tipo regular/extra, placa, condutor, auxiliar, lacres e horários |
 | Devolução de Mercadorias, DovoluçõesInativas_2022. | Devoluções | Transportador, fornecedor, NF, motivo, volumes, integral/parcial/sobra, conferente e recebimento. Sem migrar o arquivo histórico inativo |
 | Entrada e Saída Colaboradores | Colaboradores | Novos eventos de Entrada/Saída com setor, liderança, motivo e horário |
-| Equipamentos Móveis | Equipamentos móveis | Colaborador, matrícula, equipamento, patrimônio, retirada, devolução e recebedor |
+| Equipamentos Móveis | Equipamentos móveis | Colaborador, matrícula, equipamento, retirada e devolução; quem recebe é o usuário logado no retorno |
 | Saída de Grupos | Saída de grupos | Formulário proposto com responsável, setor, quantidade, integrantes, motivo, saída e retorno; requer validação operacional, pois os cabeçalhos não ficaram identificáveis na leitura dessa aba |
 
 Em todos os módulos há observações, situação, autoria, cadastro, alteração e versão. O campo Segurança/Prevenção foi substituído pela identificação do usuário conectado para o lançamento. Nesta versão, não existem campos separados para o segurança de saída e o segurança de retorno: a auditoria registra quem realizou a atualização, e o recebedor pode ser informado onde previsto. O módulo Veículos não possui um motorista de retorno separado; caso diferente do motorista da retirada, informe em observações.

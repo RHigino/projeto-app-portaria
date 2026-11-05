@@ -38,7 +38,7 @@ ONLINE_WINDOW = 120  # seconds without activity before a user shows as offline
 SEEN_THROTTLE = 30  # avoid a database write on every request
 UPPERCASE_KINDS = ('text', 'textarea')  # typed text is stored in uppercase; options, dates and numbers are not
 ESCANINHOS = 216  # doors drawn in static/escaninhos.svg
-ARMARIOS = 200  # doors per locker room in static/vestiario.svg (shared by both rooms)
+ARMARIOS = 300  # doors per locker room in static/vestiario.svg (shared by both rooms)
 # Door maps of the "chaves" module: payload field, door count, locker room filter and settings key of blocked doors.
 DOOR_MAPS = {
     'escaninhos': {'field': 'escaninho', 'total': ESCANINHOS, 'name': 'escaninho', 'vestiario': None, 'setting': 'escaninhos_bloqueados'},
@@ -81,6 +81,10 @@ def initialize():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, actor TEXT NOT NULL,
           action TEXT NOT NULL, entity TEXT NOT NULL, details TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS copias_chave(id INTEGER PRIMARY KEY, record_id INTEGER NOT NULL REFERENCES records(id),
+          motivo TEXT NOT NULL, observacao TEXT NOT NULL DEFAULT '', entregue_em TEXT NOT NULL, entregue_por INTEGER REFERENCES users(id),
+          devolvida_em TEXT, devolvida_por INTEGER REFERENCES users(id));
+        CREATE INDEX IF NOT EXISTS copias_record ON copias_chave(record_id);
         INSERT OR IGNORE INTO settings VALUES('unidade','CD Bahia');
         ''')
         bases.create_tables(c)
@@ -179,7 +183,7 @@ def valid_user(data):
         raise ValueError('A senha deve ter entre 10 e 200 caracteres.')
     if role not in ('admin','operador'):
         raise ValueError('Perfil inválido.')
-    return name.strip(), username, password_hash(password), role
+    return name.strip().upper(), username.upper(), password_hash(password), role
 
 def valid_modules(value,role):
     """Stored form of an operator's allowed modules: None (all) or a JSON list in schema order."""
@@ -198,7 +202,8 @@ def validate_record(data):
         raise ValueError('Módulo inválido.')
     payload = data.get('payload')
     if not isinstance(payload,dict): raise ValueError('Informe os campos do registro em payload.')
-    allowed = {f[0] for f in MODULES[module]['fields']} | {'observacoes'}
+    retired = MODULES[module].get('retired',[])  # fields taken off the form; values saved before stay in the record
+    allowed = {f[0] for f in MODULES[module]['fields']} | {'observacoes'} | set(retired)
     if set(payload)-allowed: raise ValueError('O registro contém campos desconhecidos.')
     clean = {}
     for f in MODULES[module]['fields'] + [['observacoes','Observações','textarea',False]]:
@@ -225,13 +230,15 @@ def validate_record(data):
                 value=parsed.isoformat(timespec='seconds')
             except ValueError: raise ValueError(f'{label}: data/hora inválida; use horário local sem fuso.')
         if value and key=='placa':
-            value=re.sub(r'[ -]','',value.upper())
-            if not re.fullmatch(r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}',value): raise ValueError('Placa inválida. Use ABC1234 ou ABC1D23.')
+            value=bases.clean_plate(value)
+            if not value: raise ValueError('Placa inválida. Use ABC1234 ou ABC1D23.')
         if value and module=='chaves' and key in ('escaninho','armario'):
             limit,name=(ESCANINHOS,'Escaninho') if key=='escaninho' else (ARMARIOS,'Armário')
             if not re.fullmatch(r'[0-9]{1,3}',value) or not 1<=int(value)<=limit: raise ValueError(f'{name}: informe um número de 1 a {limit}.')
             value=str(int(value))
         clean[key]=value
+    for key in retired:
+        if isinstance(payload.get(key),str) and payload[key].strip(): clean[key]=payload[key].strip()[:200]
     if module=='chaves':
         if not clean.get('armario') and not clean.get('escaninho'): raise ValueError('Informe o armário ou o escaninho.')
         if bool(clean.get('armario'))!=bool(clean.get('vestiario')): raise ValueError('Informe o vestiário e o número do armário juntos.')
@@ -263,6 +270,11 @@ def blocked_doors(c,mapa):
     row=c.execute('SELECT value FROM settings WHERE key=?',(DOOR_MAPS[mapa]['setting'],)).fetchone()
     return set(json.loads(row[0])) if row else set()
 
+def block_reasons(c,mapa):
+    """{door number: {motivo, por, em}} of the blocked doors of a map; doors blocked before reasons existed have none."""
+    row=c.execute('SELECT value FROM settings WHERE key=?',(DOOR_MAPS[mapa]['setting']+'_motivos',)).fetchone()
+    return json.loads(row[0]) if row else {}
+
 def door_holder(c,mapa,number,exclude=None):
     """Id of the active record linked to this door (open and without key return), if any."""
     door=DOOR_MAPS[mapa]
@@ -286,6 +298,22 @@ def check_doors(c,module,payload,status,exclude=None):
         name=DOOR_MAPS[mapa]['name']
         if number in blocked_doors(c,mapa):raise Conflict(f'O {name} {number} está bloqueado.')
         if door_holder(c,mapa,number,exclude):raise Conflict(f'O {name} {number} já está ocupado. Libere-o antes de vincular outra pessoa.')
+
+KEY_COPY_REASONS=('Esqueceu a chave','Perdeu a chave','Outro')
+COPY_STILL_OUT='A cópia da chave ainda não foi devolvida. Registre a devolução da cópia antes de liberar.'
+
+def open_copy(c,rid):
+    """Id of the spare key of this record that was handed out and not returned yet, if any."""
+    row=c.execute('SELECT id FROM copias_chave WHERE record_id=? AND devolvida_em IS NULL',(rid,)).fetchone()
+    return row[0] if row else None
+
+def key_copies(c):
+    """Spare keys handed out, grouped by record id, oldest first."""
+    rows=c.execute('''SELECT k.id,k.record_id,k.motivo,k.observacao,k.entregue_em,eu.name entregue_por,k.devolvida_em,du.name devolvida_por
+        FROM copias_chave k LEFT JOIN users eu ON eu.id=k.entregue_por LEFT JOIN users du ON du.id=k.devolvida_por ORDER BY k.id''')
+    grouped={}
+    for r in rows:grouped.setdefault(r['record_id'],[]).append({k:r[k] for k in r.keys() if k!='record_id'})
+    return grouped
 
 def record_dict(row):
     d=dict(row);d['payload']=json.loads(d['payload']);return d
@@ -406,7 +434,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,bases.find_terceiros(c,query.get('q',[''])[0]))
             if path=='/api/records' and method=='GET':
                 rows=c.execute('SELECT r.*,u.name creator,ru.name returner FROM records r JOIN users u ON u.id=r.created_by LEFT JOIN users ru ON ru.id=r.returned_by ORDER BY r.id DESC').fetchall()
-                return self.send(200,[record_dict(r) for r in rows if r['module'] in allowed])
+                copies=key_copies(c)
+                return self.send(200,[{**record_dict(r),**({'copias':copies.get(r['id'],[])} if r['module']=='chaves' else {})} for r in rows if r['module'] in allowed])
             if path=='/api/records' and method=='POST':
                 data=self.body();module,payload,status=validate_record(data)
                 if module not in allowed:return self.send(403,{'error':'Você não tem acesso a esta aba.'})
@@ -418,26 +447,49 @@ class Handler(BaseHTTPRequestHandler):
                 rid=int(path.split('/')[-2]);data=self.body();old=c.execute('SELECT * FROM records WHERE id=?',(rid,)).fetchone()
                 if not old or old['module'] not in allowed:return self.send(404,{'error':'Registro não encontrado.'})
                 payload=merge_return(old,data);stamp=now()
+                if old['module']=='chaves' and open_copy(c,rid):raise Conflict(COPY_STILL_OUT)
                 cursor=c.execute("UPDATE records SET payload=?,status='Concluído',updated_at=?,returned_by=?,returned_at=?,version=version+1 WHERE id=? AND version=? AND status='Em aberto'",(json.dumps(payload,ensure_ascii=False),stamp,user['id'],stamp,rid,data.get('version')))
                 if cursor.rowcount!=1:return self.send(409,{'error':'Este registro mudou. Atualize a tela antes de registrar o retorno.'})
                 audit(c,user,'Retorno registrado',rid,old['module']);c.commit();return self.send(200,{'ok':True})
+            if path.startswith('/api/records/') and path.endswith('/copias') and method=='POST':
+                rid=int(path.split('/')[-2]);data=self.body()
+                reason=data.get('motivo');note=data.get('observacao','')
+                if reason not in KEY_COPY_REASONS:raise ValueError('Escolha o motivo da cópia da chave.')
+                if not isinstance(note,str) or len(note.strip())>300:raise ValueError('A observação da cópia pode ter até 300 caracteres.')
+                c.execute('BEGIN IMMEDIATE')
+                old=c.execute('SELECT * FROM records WHERE id=?',(rid,)).fetchone()
+                if not old or old['module'] not in allowed:return self.send(404,{'error':'Registro não encontrado.'})
+                if old['module']!='chaves':raise ValueError('Cópia de chave só existe em Armários e Escaninhos.')
+                if old['status']!='Em aberto' or json.loads(old['payload']).get('devolucao'):raise Conflict('Este cadastro já foi encerrado.')
+                if open_copy(c,rid):raise Conflict('Já existe uma cópia entregue e não devolvida neste cadastro.')
+                cursor=c.execute('INSERT INTO copias_chave(record_id,motivo,observacao,entregue_em,entregue_por) VALUES(?,?,?,?,?)',(rid,reason,note.strip().upper(),now(),user['id']))
+                audit(c,user,'Cópia de chave entregue',rid,reason);c.commit();return self.send(201,{'id':cursor.lastrowid})
+            if path.startswith('/api/copias/') and path.endswith('/devolucao') and method=='POST':
+                cid=int(path.split('/')[-2]);c.execute('BEGIN IMMEDIATE')
+                row=c.execute('SELECT k.*,r.module FROM copias_chave k JOIN records r ON r.id=k.record_id WHERE k.id=?',(cid,)).fetchone()
+                if not row or row['module'] not in allowed:return self.send(404,{'error':'Cópia não encontrada.'})
+                if row['devolvida_em']:raise Conflict('Esta cópia já foi devolvida.')
+                c.execute('UPDATE copias_chave SET devolvida_em=?,devolvida_por=? WHERE id=?',(now(),user['id'],cid))
+                audit(c,user,'Cópia de chave devolvida',row['record_id'],row['motivo']);c.commit();return self.send(200,{'ok':True})
             if not admin:return self.send(403,{'error':'Apenas o administrador pode realizar esta ação.'})
             if path=='/api/bases' and method=='GET':return self.send(200,bases.summary(c))
-            if path.startswith('/api/bases/') and method=='POST':
-                base=path.split('/')[-1]
-                if base not in bases.BASES:return self.send(404,{'error':'Base não encontrada.'})
+            if path=='/api/bases' and method=='POST':
                 data=self.xlsx_body();c.execute('BEGIN IMMEDIATE')
-                counts=bases.import_base(c,base,data,now())
-                audit(c,user,'Importação de base',base,f"{counts['novos']} novos, {counts['atualizados']} atualizados, {counts['ignorados']} ignorados");c.commit()
-                return self.send(200,counts)
+                result=bases.import_workbook(c,data,now())
+                for base,counts in result['abas'].items():
+                    audit(c,user,'Importação de base',base,f"{counts['novos']} novos, {counts['atualizados']} atualizados, {counts['ignorados']} ignorados")
+                c.commit();return self.send(200,result)
             if path.startswith('/api/records/') and method in ('PATCH','DELETE'):
                 rid=int(path.split('/')[-1]);old=c.execute('SELECT * FROM records WHERE id=?',(rid,)).fetchone()
                 if not old:return self.send(404,{'error':'Registro não encontrado.'})
-                if method=='DELETE':c.execute('DELETE FROM records WHERE id=?',(rid,))
+                if method=='DELETE':
+                    c.execute('DELETE FROM copias_chave WHERE record_id=?',(rid,));c.execute('DELETE FROM records WHERE id=?',(rid,))
                 else:
                     data=self.body();module,payload,status=validate_record(data)
                     if module!=old['module']:raise ValueError('Não é permitido trocar o módulo de um registro.')
+                    saved=json.loads(old['payload']);payload={**{k:saved[k] for k in MODULES[module].get('retired',[]) if k in saved},**payload}  # the form no longer sends these
                     c.execute('BEGIN IMMEDIATE');check_doors(c,module,payload,status,rid)
+                    if module=='chaves' and (status!='Em aberto' or payload.get('devolucao')) and open_copy(c,rid):raise Conflict(COPY_STILL_OUT)
                     cursor=c.execute('UPDATE records SET payload=?,status=?,updated_at=?,version=version+1 WHERE id=? AND version=?',(json.dumps(payload,ensure_ascii=False),status,now(),rid,data.get('version')))
                     if cursor.rowcount!=1:return self.send(409,{'error':'Este registro mudou. Atualize a tela antes de editar.'})
                 audit(c,user,'Exclusão' if method=='DELETE' else 'Edição',rid,old['module']);c.commit();return self.send(200,{'ok':True})
@@ -461,7 +513,7 @@ class Handler(BaseHTTPRequestHandler):
                 if data.get('password'):
                     _,_,hashed,_=valid_user({'name':name,'username':old['username'],'password':data['password'],'role':role})
                 modules=valid_modules(data['modules'],role) if 'modules' in data else (None if role=='admin' else old['modules'])
-                c.execute('UPDATE users SET name=?,role=?,active=?,password=?,modules=? WHERE id=?',(name.strip(),role,active,hashed,modules,uid))
+                c.execute('UPDATE users SET name=?,role=?,active=?,password=?,modules=? WHERE id=?',(name.strip().upper(),role,active,hashed,modules,uid))
                 c.execute('DELETE FROM sessions WHERE user_id=?',(uid,));audit(c,user,'Atualização de usuário',uid);c.commit();return self.send(200,{'ok':True})
             if path=='/api/audit' and method=='GET':return self.send(200,[dict(r) for r in c.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 1000')])
             if path=='/api/export' and method=='GET':
@@ -495,15 +547,24 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(mapa,str) or mapa not in DOOR_MAPS:raise ValueError('Mapa inválido.')
                 door=DOOR_MAPS[mapa]
                 if type(number) is not int or not 1<=number<=door['total'] or type(blocked) is not bool:raise ValueError('Número ou situação inválida.')
+                reason=data.get('motivo','')
+                if blocked:
+                    reason=reason.strip().upper() if isinstance(reason,str) else ''
+                    if not reason:raise ValueError('Informe o motivo do bloqueio.')
+                    if len(reason)>200:raise ValueError('O motivo do bloqueio pode ter até 200 caracteres.')
                 c.execute('BEGIN IMMEDIATE')
                 if blocked and door_holder(c,mapa,number):raise Conflict(f"O {door['name']} {number} está ocupado. Libere-o antes de bloquear.")
                 current=blocked_doors(c,mapa);updated=sorted(current|{number} if blocked else current-{number})
-                c.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(door['setting'],json.dumps(updated)))
-                audit(c,user,'Bloqueio' if blocked else 'Desbloqueio',f"{door['name']} {number}");c.commit();return self.send(200,{'ok':True})
+                reasons={k:v for k,v in block_reasons(c,mapa).items() if k!=str(number)}
+                if blocked:reasons[str(number)]={'motivo':reason,'por':user['name'],'em':now()}
+                save="INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+                c.execute(save,(door['setting'],json.dumps(updated)))
+                c.execute(save,(door['setting']+'_motivos',json.dumps(reasons,ensure_ascii=False)))
+                audit(c,user,'Bloqueio' if blocked else 'Desbloqueio',f"{door['name']} {number}",reason if blocked else '');c.commit();return self.send(200,{'ok':True})
             if path=='/api/settings' and method=='PATCH':
                 value=self.body().get('unidade','')
                 if not isinstance(value,str) or not 2<=len(value.strip())<=80:raise ValueError('Nome da unidade inválido.')
-                c.execute("UPDATE settings SET value=? WHERE key='unidade'",(value.strip(),));audit(c,user,'Configuração','unidade');c.commit();return self.send(200,{'ok':True})
+                c.execute("UPDATE settings SET value=? WHERE key='unidade'",(value.strip().upper(),));audit(c,user,'Configuração','unidade');c.commit();return self.send(200,{'ok':True})
             return self.send(404,{'error':'Recurso não encontrado.'})
 
 def reset_password(username,ask):

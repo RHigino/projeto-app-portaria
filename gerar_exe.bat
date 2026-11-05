@@ -2,7 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 echo Gerando PrevencaoPerdas.exe (requer Python e PyInstaller nesta maquina)...
-py -3 -m PyInstaller --noconfirm --clean --onefile --name PrevencaoPerdas --icon icone.ico ^
+py -3 -m PyInstaller --noconfirm --clean --onefile --noconsole --name PrevencaoPerdas --icon icone.ico ^
   --add-data "schema.json;." --add-data "static;static" iniciar.py
 if errorlevel 1 (
     echo.

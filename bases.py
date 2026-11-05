@@ -1,4 +1,4 @@
-"""Reference bases imported from .xlsx spreadsheets (colaboradores, terceirizados, fornecedores) and their lookups.
+"""Reference bases imported from one .xlsx workbook, one tab per base, and their lookups.
 
 Standard library only: an .xlsx file is a zip of XML parts.
 """
@@ -16,7 +16,14 @@ SUGGESTIONS = 10
 XLSX_NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
 REL_NS = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
 PKG_REL_NS = '{http://schemas.openxmlformats.org/package/2006/relationships}'
-LIST_TYPES = ('transportador', 'fornecedor', 'motivo')
+BASE_LISTS = {'fornecedores': ('transportador', 'fornecedor', 'motivo'),
+              'frota': ('placa_caminhao', 'placa_carro', 'condutor', 'auxiliar', 'rota')}
+LIST_TYPES = sum(BASE_LISTS.values(), ())
+PLATE_TYPES = ('placa_caminhao', 'placa_carro')
+PLATE_FORMAT = re.compile(r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}')
+# A tab belongs to the base whose word appears in its name (normalized), e.g. "Acesso de Terceiros".
+TAB_WORDS = {'COLABORADOR': 'colaboradores', 'TERCEIR': 'terceirizados', 'FORNECEDOR': 'fornecedores', 'PLACA': 'frota'}
+TAB_HINT = 'Colaboradores, Acesso de Terceiros, Fornecedores e Placa do carro e caminhão'
 
 # Spreadsheet header (normalized) -> column key. Columns not listed (birth date, admission, manager…) are not stored.
 BASES = {
@@ -26,6 +33,8 @@ BASES = {
                       'required': ('nome',), 'any_of': ('cpf', 'rg'), 'headers': 'Nome, CPF, RG, Empresa/Transportadora'},
     'fornecedores': {'columns': {'TRANSPORTADOR': 'transportador', 'TRANSPORTADORA': 'transportador', 'FORNECEDOR': 'fornecedor', 'MOTIVO': 'motivo'},
                      'required': (), 'any_of': ('transportador', 'fornecedor', 'motivo'), 'headers': 'Transportador, Fornecedor, Motivo'},
+    'frota': {'columns': {'PLACAS DOS CAMINHOES': 'placa_caminhao', 'PLACA DO CAMINHAO': 'placa_caminhao', 'PLACAS DOS CARROS': 'placa_carro', 'PLACA DO CARRO': 'placa_carro', 'CONDUTOR': 'condutor', 'AUXILIAR': 'auxiliar', 'ROTA': 'rota', 'ROTAS': 'rota'},
+              'required': (), 'any_of': BASE_LISTS['frota'], 'headers': 'Placas dos Caminhoes, Placa do Carro, Condutor, Auxiliar, Rota'},
 }
 
 
@@ -61,6 +70,12 @@ def rg_key(value):
     return re.sub(r'[^0-9A-Z]', '', str(value).upper())
 
 
+def clean_plate(value: str) -> str:
+    """Plate as the records store it (ABC1234 or ABC1D23); empty when it is not a valid plate."""
+    plate = re.sub(r'[\s-]', '', str(value).upper())
+    return plate if PLATE_FORMAT.fullmatch(plate) else ''
+
+
 def _column(ref, fallback):
     letters = re.match(r'[A-Z]+', ref or '')
     if not letters:
@@ -87,31 +102,25 @@ def _cell_text(cell, shared):
     return text
 
 
-def _first_sheet(z):
-    try:
-        workbook = ET.fromstring(z.read('xl/workbook.xml'))
-        sheet = workbook.find(f'{XLSX_NS}sheets/{XLSX_NS}sheet')
-        rel_id = sheet.get(REL_NS + 'id')
-        rels = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
-        target = next(r.get('Target') for r in rels.iter(PKG_REL_NS + 'Relationship') if r.get('Id') == rel_id)
-        return target.lstrip('/') if target.startswith('/') else 'xl/' + target
-    except (KeyError, AttributeError, StopIteration):
-        return 'xl/worksheets/sheet1.xml'
+def _workbook_tabs(z: zipfile.ZipFile) -> list[tuple[str, str]]:
+    """(tab name, path of its part in the zip) in workbook order."""
+    workbook = ET.fromstring(z.read('xl/workbook.xml'))
+    rels = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+    targets = {r.get('Id'): r.get('Target') for r in rels.iter(PKG_REL_NS + 'Relationship')}
+    tabs = []
+    for sheet in workbook.iter(XLSX_NS + 'sheet'):
+        target = targets[sheet.get(REL_NS + 'id')]
+        tabs.append((sheet.get('name') or '', target.lstrip('/') if target.startswith('/') else 'xl/' + target))
+    return tabs
 
 
-def read_xlsx(data):
-    """Rows of the first sheet as lists of strings."""
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            if any(info.file_size > MAX_PART for info in z.infolist()):
-                raise ValueError('A planilha é grande demais. Divida em arquivos menores.')
-            shared = []
-            if 'xl/sharedStrings.xml' in z.namelist():
-                for item in ET.fromstring(z.read('xl/sharedStrings.xml')).iter(XLSX_NS + 'si'):
-                    shared.append(''.join(t.text or '' for t in item.iter(XLSX_NS + 't')))
-            sheet = ET.fromstring(z.read(_first_sheet(z)))
-    except (zipfile.BadZipFile, KeyError, ET.ParseError):
-        raise ValueError('O arquivo não é uma planilha .xlsx válida. Salve no Excel como "Pasta de Trabalho do Excel (.xlsx)".')
+def _tab_base(name: str) -> str | None:
+    tab = plain(name)
+    return next((base for word, base in TAB_WORDS.items() if word in tab), None)
+
+
+def _sheet_rows(sheet: ET.Element, shared: list[str], tab: str) -> list[list[str]]:
+    """Rows of a tab as lists of strings."""
     rows = []
     for row in sheet.iter(XLSX_NS + 'row'):
         cells, position = {}, -1
@@ -120,8 +129,34 @@ def read_xlsx(data):
             cells[position] = _cell_text(cell, shared).strip()
         rows.append([cells.get(i, '') for i in range(max(cells) + 1)] if cells else [])
         if len(rows) > MAX_ROWS + HEADER_SEARCH:
-            raise ValueError(f'A planilha tem mais de {MAX_ROWS} linhas. Divida em arquivos menores.')
+            raise ValueError(f'A aba "{tab}" tem mais de {MAX_ROWS} linhas.')
     return rows
+
+
+def read_workbook(data: bytes) -> tuple[dict[str, tuple[str, list[list[str]]]], list[str]]:
+    """{base: (tab name, rows)} for the tabs that belong to a base, and the names of the other tabs."""
+    found, ignored = {}, []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            if any(info.file_size > MAX_PART for info in z.infolist()):
+                raise ValueError('A planilha é grande demais. Divida em arquivos menores.')
+            shared = []
+            if 'xl/sharedStrings.xml' in z.namelist():
+                for item in ET.fromstring(z.read('xl/sharedStrings.xml')).iter(XLSX_NS + 'si'):
+                    shared.append(''.join(t.text or '' for t in item.iter(XLSX_NS + 't')))
+            for tab, part in _workbook_tabs(z):
+                base = _tab_base(tab)
+                if not base:
+                    ignored.append(tab)
+                elif base in found:
+                    raise ValueError(f'As abas "{found[base][0]}" e "{tab}" são da mesma base. Deixe só uma ou renomeie a outra.')
+                else:
+                    found[base] = (tab, _sheet_rows(ET.fromstring(z.read(part)), shared, tab))
+    except (zipfile.BadZipFile, KeyError, ET.ParseError):
+        raise ValueError('O arquivo não é uma planilha .xlsx válida. Salve no Excel como "Pasta de Trabalho do Excel (.xlsx)".')
+    if not found:
+        raise ValueError(f'Nenhuma aba reconhecida. Use abas com estes nomes: {TAB_HINT}.')
+    return found, ignored
 
 
 def _header(rows, base):
@@ -135,7 +170,7 @@ def _header(rows, base):
                 found[key] = position
         if found and all(k in found for k in spec['required']) and (not spec['any_of'] or any(k in found for k in spec['any_of'])):
             return index, found
-    raise ValueError(f"Não encontrei os cabeçalhos da base {base}. Confira se é a planilha certa; colunas esperadas: {spec['headers']}.")
+    raise ValueError(f"Não encontrei os cabeçalhos. Colunas esperadas: {spec['headers']}.")
 
 
 def _records(rows, base):
@@ -146,11 +181,20 @@ def _records(rows, base):
             yield values
 
 
-def import_base(c, base, data, stamp):
+def import_workbook(c, data: bytes, stamp: str) -> dict:
+    """Imports every recognized tab. Any error is raised naming the tab; the caller's rollback then discards all tabs."""
+    tabs, ignored = read_workbook(data)
+    imported = {}
+    for base, (tab, rows) in tabs.items():
+        try:
+            imported[base] = import_base(c, base, rows, stamp)
+        except ValueError as error:
+            raise ValueError(f'Aba "{tab}": {error} Nada foi importado.')
+    return {'abas': imported, 'ignoradas': ignored}
+
+
+def import_base(c, base, rows, stamp):
     """Adds new entries and updates existing ones (by matrícula, CPF/RG or value). Returns counts for the screen."""
-    if base not in BASES:
-        raise ValueError('Base inválida.')
-    rows = read_xlsx(data)
     counts = {'novos': 0, 'atualizados': 0, 'ignorados': 0}
 
     def save(exists_sql, key, upsert_sql, params):
@@ -177,13 +221,20 @@ def import_base(c, base, data, stamp):
                  'INSERT INTO base_terceiros VALUES(?,?,?,?,?,?) ON CONFLICT(chave) DO UPDATE SET nome=excluded.nome,cpf=excluded.cpf,rg=excluded.rg,empresa=excluded.empresa,updated_at=excluded.updated_at',
                  (key, values['nome'], cpf, rg, values.get('empresa', ''), stamp))
         else:
-            for kind in LIST_TYPES:
-                if values.get(kind):
-                    added = c.execute('INSERT OR IGNORE INTO base_listas VALUES(?,?)', (kind, values[kind])).rowcount
-                    counts['novos' if added else 'atualizados'] += 1
+            for kind in BASE_LISTS[base]:
+                value = values.get(kind, '')
+                if not value:
+                    continue
+                if kind in PLATE_TYPES:
+                    value = clean_plate(value)
+                    if not value:  # the record form would refuse it
+                        counts['ignorados'] += 1
+                        continue
+                added = c.execute('INSERT OR IGNORE INTO base_listas VALUES(?,?)', (kind, value)).rowcount
+                counts['novos' if added else 'atualizados'] += 1
     if not counts['novos'] and not counts['atualizados']:
         detail = f" ({counts['ignorados']} linhas sem os dados obrigatórios)" if counts['ignorados'] else ''
-        raise ValueError(f'Nenhuma linha foi importada{detail}. Confira se é a planilha certa.')
+        raise ValueError(f'Nenhuma linha foi importada{detail}.')
     return counts
 
 
@@ -193,11 +244,11 @@ def summary(c):
     lists = dict(c.execute('SELECT tipo, COUNT(*) FROM base_listas GROUP BY tipo').fetchall())
     return {'colaboradores': {'total': colab[0], 'atualizado': colab[1]},
             'terceirizados': {'total': terc[0], 'atualizado': terc[1]},
-            'fornecedores': {k: lists.get(k, 0) for k in LIST_TYPES}}
+            **{base: {k: lists.get(k, 0) for k in kinds} for base, kinds in BASE_LISTS.items()}}
 
 
 def lists(c):
-    """Choice lists of the Devoluções form (not personal data, sent to every user)."""
+    """Choice lists of the Devoluções, Rotas and Veículos forms, sent to every logged-in user (no documents)."""
     result = {k: [] for k in LIST_TYPES}
     for kind, value in c.execute('SELECT tipo, valor FROM base_listas ORDER BY valor'):
         result[kind].append(value)
