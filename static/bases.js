@@ -1,17 +1,22 @@
 'use strict';
 // Bases imported from .xlsx (Configurações) and the lookups they power in the record forms.
 const BASES_INFO=[
-  ['colaboradores','Colaboradores','Aba Colaboradores','Situação, Matricula, Nome Completo, Cargo','Pela matrícula, preenche nome e cargo em Armários e Escaninhos, Saída de materiais e Equipamentos móveis.'],
+  ['colaboradores','Colaboradores','Aba Colaboradores','Situação, Matricula, Nome Completo, Cargo','Pela matrícula, preenche nome e cargo em Armários e Escaninhos, Saída de materiais e Equipamentos móveis. Sugere nomes ao digitar o condutor e o auxiliar em Rotas e o colaborador de retorno em Equipamentos móveis.'],
   ['terceirizados','Terceirizados','Aba Acesso de Terceiros','Nome, CPF, RG, Empresa/Transportadora','Pelo CPF ou RG, preenche nome e empresa no Cadastro de pessoas.'],
   ['fornecedores','Fornecedores','Aba Fornecedores','Transportador, Fornecedor, Motivo','Listas para escolher em Devoluções.'],
-  ['frota','Placas e condutores','Aba Placa do carro e caminhão','Placas dos Caminhoes, Placa do Carro, Condutor, Auxiliar, Rota','Listas para escolher em Rotas (rota, placa do caminhão, condutor e auxiliar) e em Veículos (placa do carro e motorista).'],
+  ['frota','Placas e condutores','Aba Placa do carro e caminhão','Placas dos Caminhoes, Placa do Carro, Condutor, Auxiliar, Rota','Listas para escolher em Rotas (rota e placa do caminhão) e em Veículos (placa do carro e motorista).'],
 ];
 const COLABORADOR_MODULES=['chaves','materiais','equipamentos'];
 // Form field -> choice list imported from the workbook, by module. Shown as a regular select.
 const MODULE_SELECTS={
   devolucoes:{transportador:'transportador',fornecedor:'fornecedor',motivo:'motivo'},
-  rotas:{rota:'rota',placa:'placa_caminhao',condutor:'condutor',auxiliar:'auxiliar'},
+  rotas:{rota:'rota',placa:'placa_caminhao'},
   veiculos:{placa:'placa_carro',motorista:'condutor'},
+};
+// Form fields that suggest names from the employee base while typing; any other name can still be typed.
+const NAME_SUGGEST={
+  rotas:['condutor','auxiliar'],
+  equipamentos:['colaborador_retorno'],
 };
 const LOOKUP_DELAY=300;  // ms after the last keystroke
 const XLSX_TYPE='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -171,12 +176,29 @@ function bindTerceiro(form){
   }));
 }
 
-function bindBaseLookups(moduleId){
-  const form=$('#recordform');if(!form)return;
+function bindNameSuggest(input){
+  const list=attachSuggest(input);
+  input.addEventListener('input',debounce(()=>{
+    const q=input.value.trim();
+    if(q.length<2){list.hide();return}
+    lookup(input,'bases/colaboradores?q='+encodeURIComponent(q),found=>{
+      const names=found.filter(p=>p.nome!==q.toUpperCase());  // nothing left to suggest once a name is picked
+      list.show(names.map(p=>[p.nome,`${p.matricula}${p.cargo?' · '+p.cargo:''}`]));
+    });
+  }));
+}
+
+// Runs on the record form and on the return form (form passed in).
+function bindBaseLookups(moduleId,form=$('#recordform')){
+  if(!form)return;
   if(COLABORADOR_MODULES.includes(moduleId)&&form.querySelector('#f-matricula')&&form.querySelector('#f-nome'))bindColaborador(form);
   if(moduleId==='pessoas')bindTerceiro(form);
   for(const [field,list] of Object.entries(MODULE_SELECTS[moduleId]||{})){
     const input=form.querySelector('#f-'+field);
     if(input)attachSelect(input,state.listas?.[list]||[]);
+  }
+  for(const field of NAME_SUGGEST[moduleId]||[]){
+    const input=form.querySelector('#f-'+field);
+    if(input&&!input.disabled)bindNameSuggest(input);
   }
 }

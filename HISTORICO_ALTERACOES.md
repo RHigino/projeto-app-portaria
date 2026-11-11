@@ -6,8 +6,8 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 
 - O projeto está em `Documents\projetospython\projeto-portariaprevencao\GateFlow`. Antes, ficava em `Downloads\GateFlow_Portaria_v1\GateFlow`.
 - O sistema está em implantação no CD, com o banco na pasta de rede.
-- Os testes automáticos passam: `python -m unittest` (27 testes).
-- **`dist\PrevencaoPerdas.exe` foi gerado em 05/11/2026, às 14:59**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado em uma pasta temporária, com banco descartável.
+- Os testes automáticos passam: `python -m unittest` (37 testes).
+- **`dist\PrevencaoPerdas.exe` foi gerado em 10/11/2026, às 21:31**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado em uma pasta temporária, com banco descartável.
 - **A pasta de rede ainda não recebeu esse `.exe`.** Até a troca, os computadores continuam com a versão anterior.
 
 ### Como está instalado no CD
@@ -61,6 +61,50 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 - **Condutor e Motorista usam a mesma lista:** o mesmo motorista atende Rotas e Veículos. Não há filtro por condutor na tabela de registros, porque o usuário confirmou que não precisa.
 
 ---
+
+## 10/11/2026 (21:31): correção do retorno de equipamentos antigos e tabela de Rotas mais compacta
+
+- **Correção:** registrar o retorno de um equipamento cadastrado antes da lista fixa (por exemplo "EMPILHADEIRA" sem número) dava "Equipamento: opção inválida". Agora, no retorno e na edição, o valor que já estava salvo continua válido, e o formulário de edição o mostra na lista. Um registro novo, ou a troca por outro valor fora da lista, continua sendo recusado. Isso vale para todas as listas fixas.
+- **Rotas, tabela compacta:** a tabela tinha 14 colunas e ganhava rolagem lateral. Agora três pares dividem a mesma coluna, com o segundo valor em letra menor embaixo: Condutor / auxiliar, Saída / lacre e Retorno / lacre (chave `stack` do schema). São 11 colunas, que cabem sem rolagem em 1600px e em 1920px de largura. O formulário e a busca não mudaram.
+- O `.exe` foi gerado em 10/11/2026, às 21:31. Testes novos: `test_records_saved_before_the_equipment_list_can_still_be_returned` e `test_route_table_stacks_pairs_to_fit` (37 testes no total).
+
+## 10/11/2026 (noite): lista fixa de equipamentos, Prevenção opcional no retorno e matrícula antes do nome
+
+- **Equipamentos móveis, "Equipamento":** virou uma lista fixa com EMPILHADEIRA 01, 02 e 03, PATOLADA 01, 02 e 03 e JET 01, 02 e 03. O servidor recusa qualquer outro valor. Os registros antigos (por exemplo "EMPILHADEIRA" sem número) continuam aparecendo como estão, mas, se alguém editar um deles, vai precisar escolher um item da lista.
+- **Equipamentos móveis, "Conferido por (Prevenção)":** deixou de ser obrigatório em "Registrar retorno" (chave `returnOptional` do schema). Em Veículos ele continua obrigatório.
+- **Matrícula antes do nome:** em Saída de materiais, Equipamentos móveis e Armários e Escaninhos, a Matrícula vem antes do Colaborador, na tabela e no formulário. O nome continua em negrito na tabela.
+- O `.exe` foi gerado em 10/11/2026, às 21:22. Testes novos: `test_equipment_is_picked_from_a_fixed_list` e `test_matricula_comes_before_the_name`. Os testes antigos de Equipamentos passaram a usar itens da lista (35 testes no total).
+
+## 10/11/2026: nomes da base em Rotas, colaborador de retorno e data de entrada
+
+- **Rotas: Condutor e Auxiliar** deixaram de ser listas fixas (vindas da aba "Placa do carro e caminhão") e agora sugerem nomes da **base de colaboradores** a partir da 2ª letra digitada. A lista mostra matrícula e cargo. Um nome fora da base ainda pode ser digitado. Rota e Placa continuam como listas.
+- **Equipamentos móveis:** novo campo **"Colaborador de retorno"**, porque quem devolve nem sempre é quem retirou. É obrigatório em "Registrar retorno", sugere nomes da base de colaboradores e aparece como coluna na tabela. O campo "Colaborador" (de quem retirou) não muda.
+- **Cadastro de pessoas:** novo campo obrigatório **"Entrada"** (data e hora). Ele já vem com o horário atual e pode ser alterado para registrar um acesso de outro dia. A coluna "Data e hora" continua mostrando quando o registro foi feito no sistema.
+- Registros antigos ficam com "—" nas colunas novas. Se alguém editar um deles, vai precisar preencher o campo.
+- Conferido no navegador, com banco de teste: as sugestões aparecem no formulário de Rotas e no retorno de Equipamentos, e o campo Entrada vem preenchido. Em 1600px de largura nenhuma tabela passa da tela; em 1366px, Veículos, Rotas, Devoluções, Equipamentos e Armários ganham rolagem lateral.
+- O `.exe` foi gerado em 10/11/2026, às 21:01. Testes novos: `test_person_access_keeps_the_day_they_came_in`, `test_equipment_return_names_who_brought_it_back` e `test_route_names_are_suggested_from_the_employee_base` (33 testes no total).
+
+## 09/11/2026: "Liberado por" em Rotas
+
+- Novo campo obrigatório **"Liberado por"** em Rotas, logo depois de "Saída". Ele registra quem liberou a rota, digitado à mão e salvo em maiúsculas. Aparece também como coluna na tabela.
+- Rotas antigas ficam com "—" nessa coluna. Se alguém editar uma delas, vai precisar preencher o campo.
+- O `.exe` foi gerado em 09/11/2026, às 12:20. Teste novo: `test_route_records_who_released_it`. Os testes que criavam rotas passaram a informar o campo (30 testes no total).
+
+## 06/11/2026 (tarde): "Conferido por (Prevenção)" no retorno de Equipamentos móveis e Veículos
+
+- Ao clicar em **Registrar retorno** em Equipamentos móveis ou Veículos, agora também é obrigatório informar **"Conferido por (Prevenção)"**. O valor é salvo em maiúsculas. Na tabela, a coluna se chama **Prevenção**, como em Devoluções.
+- Ao abrir o registro (retirada ou saída), o campo aparece como opcional, igual aos outros campos de retorno.
+- Os registros já devolvidos ficam com "—" nessa coluna. "Recebido por" (Equipamentos) continua sendo quem estava logado.
+- O `.exe` foi gerado em 06/11/2026, às 15:22. Teste novo: `test_return_asks_who_checked_for_prevention`. Dois testes antigos foram ajustados porque o retorno agora pede esse campo (29 testes no total).
+
+## 06/11/2026: Devoluções aceitam 0 volume e registram quem conferiu pela Prevenção
+
+- **Volumes = 0:** antes o servidor recusava o 0 como "número inválido". Agora o 0 é aceito. Negativos e números quebrados continuam recusados. Na Saída de materiais, a quantidade continua precisando ser pelo menos 1.
+- **Novo campo "Conferido por (Prevenção)":** é obrigatório e fica logo após "Conferente". O valor é salvo em maiúsculas. O operador logado continua sendo registrado automaticamente, como antes.
+- **Tabelas em uma linha e em maiúsculas (todos os módulos e a Visão geral):** títulos e células não quebram mais linha, e o conteúdo das células aparece em maiúsculas (só na exibição; os dados salvos não mudam, por exemplo "Integral" e nomes antigos de usuários). O espaço entre colunas caiu de 9px para 7px. Em Devoluções, o cabeçalho da tabela usa títulos curtos (Motivo, Tipo, Prevenção, pela chave "columns" do schema); o formulário mantém os nomes completos. Em 1600px de largura ou mais todas as tabelas cabem na tela; em 1366px, Devoluções e Armários e Escaninhos ganham rolagem lateral dentro da tabela.
+- Devoluções antigas não têm esse campo. Se alguém editar uma delas, vai precisar preenchê-lo.
+- O `.exe` foi gerado em 06/11/2026, às 15:22, com estas mudanças. Foi testado em uma pasta temporária, com banco descartável.
+- Teste novo: `test_devolucao_accepts_zero_volumes_and_requires_prevention_checker` (28 testes no total).
 
 ## 05/11/2026: feminino de 157 a 300, bloqueio em sequência e marca de terceirizado
 

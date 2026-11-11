@@ -76,7 +76,7 @@ class IntegrationTest(unittest.TestCase):
         code,user=self.req(admin,'users','POST',{'name':'Operador Um','username':'operador','password':'senha-operador-123'},token);self.assertEqual(code,201);uid=user['id']
         self.assertEqual(self.req(op,'login','POST',{'username':'operador','password':'senha-operador-123'})[0],200)
         ot=self.req(op,'session')[1]['user']['csrf']
-        record={'module':'rotas','payload':{'rota':'Rota Teste','tipo':'Regular','placa':'ABC1D23','condutor':'Condutor Teste','lacre':'LACRE-001','saida':'2026-10-28T10:00'}}
+        record={'module':'rotas','payload':{'rota':'Rota Teste','tipo':'Regular','placa':'ABC1D23','condutor':'Condutor Teste','lacre':'LACRE-001','saida':'2026-10-28T10:00','liberado_por':'L'}}
         bad={**record,'payload':{**record['payload'],'tipo':'invalida'}}
         self.assertEqual(self.req(op,'records','POST',bad,ot)[0],400)
         self.assertEqual(self.req(op,'records','POST',{**record,'status':'Concluído'},ot)[0],403)
@@ -139,7 +139,7 @@ class IntegrationTest(unittest.TestCase):
         for client,login in ((admin,'retorno-admin'),(op,'retorno-op')):
             self.assertEqual(self.req(client,'login','POST',{'username':login,'password':'senha-retorno-123'})[0],200)
         at,ot=self.req(admin,'session')[1]['user']['csrf'],self.req(op,'session')[1]['user']['csrf']
-        rid=self.req(admin,'records','POST',{'module':'rotas','payload':{'rota':'R1','tipo':'Extra','placa':'ABC1D23','condutor':'C','lacre':'L1','saida':'2026-10-28T10:00'}},at)[1]['id']
+        rid=self.req(admin,'records','POST',{'module':'rotas','payload':{'rota':'R1','tipo':'Extra','placa':'ABC1D23','condutor':'C','lacre':'L1','saida':'2026-10-28T10:00','liberado_por':'L'}},at)[1]['id']
         url=f'records/{rid}/retorno'
         self.assertEqual(self.req(op,url,'POST',{'payload':{'retorno':'2026-10-28T09:00','lacre_retorno':'L2'},'version':1},ot)[0],400)
         self.assertEqual(self.req(op,url,'POST',{'payload':{'retorno':'2026-10-28T12:00'},'version':1},ot)[0],400)
@@ -149,7 +149,7 @@ class IntegrationTest(unittest.TestCase):
         saved=next(r for r in self.req(op,'records')[1] if r['id']==rid)
         self.assertEqual((saved['status'],saved['returner'],saved['payload']['lacre_retorno'],saved['payload']['placa']),('Concluído','USUARIO RETORNO-OP','L2','ABC1D23'))
         self.assertEqual(self.req(op,url,'POST',{'payload':{'retorno':'2026-10-28T13:00','lacre_retorno':'L3'},'version':2},ot)[0],400)
-        pessoa=self.req(admin,'records','POST',{'module':'pessoas','payload':{'nome':'P','documento':'123','empresa':'E','motivo':'Visita','area':'RH'}},at)[1]['id']
+        pessoa=self.req(admin,'records','POST',{'module':'pessoas','payload':{'nome':'P','documento':'123','empresa':'E','motivo':'Visita','area':'RH','entrada':'2026-10-28T09:00'}},at)[1]['id']
         self.assertEqual(self.req(op,f'records/{pessoa}/retorno','POST',{'payload':{},'version':1},ot)[0],400)
 
     def test_escaninho_map_rules(self):
@@ -287,7 +287,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(len(record()['copias']),2)
         actions=[a['action'] for a in self.req(admin,'audit')[1]]
         self.assertIn('Cópia de chave entregue',actions);self.assertIn('Cópia de chave devolvida',actions)
-        other=self.req(admin,'records','POST',{'module':'rotas','payload':{'rota':'R1','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L1','saida':'2026-10-30T08:00'}},at)[1]['id']
+        other=self.req(admin,'records','POST',{'module':'rotas','payload':{'rota':'R1','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L1','saida':'2026-10-30T08:00','liberado_por':'L'}},at)[1]['id']
         self.assertEqual(give(admin,at,other,motivo='Esqueceu a chave')[0],400)  # copies only exist for key records
         self.assertEqual(self.req(admin,f'records/{rid}','DELETE',None,at)[0],200)  # deleting the record removes its copies
         with closing(app.connect()) as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM copias_chave WHERE record_id=?',(rid,)).fetchone()[0],0)
@@ -334,15 +334,15 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(admin,'users','POST',{**new,'modules':[]},at)[0],400)
         self.assertEqual(self.req(admin,'users','POST',{**new,'modules':['inexistente']},at)[0],400)
         uid=self.req(admin,'users','POST',{**new,'modules':['pessoas']},at)[1]['id']
-        rota=self.req(admin,'records','POST',{'module':'rotas','payload':{'rota':'R','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L','saida':'2026-10-28T10:00'}},at)[1]['id']
-        self.assertEqual(self.req(admin,'records','POST',{'module':'pessoas','payload':{'nome':'P','documento':'123','empresa':'E','motivo':'Visita','area':'RH'}},at)[0],201)
+        rota=self.req(admin,'records','POST',{'module':'rotas','payload':{'rota':'R','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L','saida':'2026-10-28T10:00','liberado_por':'L'}},at)[1]['id']
+        self.assertEqual(self.req(admin,'records','POST',{'module':'pessoas','payload':{'nome':'P','documento':'123','empresa':'E','motivo':'Visita','area':'RH','entrada':'2026-10-28T09:00'}},at)[0],201)
         self.assertEqual(self.req(op,'login','POST',{'username':'so-pessoas','password':'senha-abas-123'})[0],200)
         ot=self.req(op,'session')[1]['user']['csrf']
         self.assertEqual([m['id'] for m in self.req(op,'bootstrap')[1]['schema']],['pessoas'])
         self.assertEqual({r['module'] for r in self.req(op,'records')[1]},{'pessoas'})
-        self.assertEqual(self.req(op,'records','POST',{'module':'rotas','payload':{'rota':'R','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L','saida':'2026-10-28T10:00'}},ot)[0],403)
+        self.assertEqual(self.req(op,'records','POST',{'module':'rotas','payload':{'rota':'R','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L','saida':'2026-10-28T10:00','liberado_por':'L'}},ot)[0],403)
         self.assertEqual(self.req(op,f'records/{rota}/retorno','POST',{'payload':{'retorno':'2026-10-28T12:00','lacre_retorno':'L2'},'version':1},ot)[0],404)
-        self.assertEqual(self.req(op,'records','POST',{'module':'pessoas','payload':{'nome':'Q','documento':'123','empresa':'E','motivo':'Visita','area':'RH'}},ot)[0],201)
+        self.assertEqual(self.req(op,'records','POST',{'module':'pessoas','payload':{'nome':'Q','documento':'123','empresa':'E','motivo':'Visita','area':'RH','entrada':'2026-10-28T09:00'}},ot)[0],201)
         listed={u['username'].lower():u for u in self.req(admin,'users')[1]}
         self.assertEqual(listed['so-pessoas']['modules'],['pessoas']);self.assertIsNone(listed['abas-admin']['modules'])
         self.assertEqual(self.req(admin,f'users/{uid}','PATCH',{'modules':None},at)[0],200)
@@ -350,7 +350,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertIn('rotas',[m['id'] for m in self.req(op,'bootstrap')[1]['schema']])
 
     def test_people_have_single_document_and_no_status(self):
-        data={'module':'pessoas','status':'Em aberto','payload':{'nome':'P','documento':'CNH 123','empresa':'E','motivo':'Entrevista','area':'RH'}}
+        data={'module':'pessoas','status':'Em aberto','payload':{'nome':'P','documento':'CNH 123','empresa':'E','motivo':'Entrevista','area':'RH','entrada':'2026-10-28T09:00'}}
         self.assertEqual(app.validate_record(data)[2],'Concluído')
         with self.assertRaises(ValueError):app.validate_record({**data,'payload':{**data['payload'],'cpf':'1'}})
         with self.assertRaises(ValueError):app.validate_record({**data,'payload':{**data['payload'],'documento':''}})
@@ -362,11 +362,99 @@ class IntegrationTest(unittest.TestCase):
             payload=json.loads(c.execute('SELECT payload FROM records WHERE id=?',(rid,)).fetchone()[0])
         self.assertEqual(payload,{'nome':'Antigo','documento':'RG 9','empresa':'E'})
 
+    def test_devolucao_accepts_zero_volumes_and_requires_prevention_checker(self):
+        data={'module':'devolucoes','payload':{'transportador':'T','fornecedor':'F','nota_fiscal':'1','motivo':'M','volumes':0,'situacao':'Integral',
+              'conferente':'C','conferente_prevencao':'fulano','recebimento':'2026-11-06T11:12'}}
+        clean=app.validate_record(data)[1]
+        self.assertEqual(clean['volumes'],'0');self.assertEqual(clean['conferente_prevencao'],'FULANO')
+        for bad in (-1,1.5):
+            with self.assertRaises(ValueError):app.validate_record({**data,'payload':{**data['payload'],'volumes':bad}})
+        with self.assertRaises(ValueError):app.validate_record({**data,'payload':{**data['payload'],'conferente_prevencao':''}})
+        material={'module':'materiais','payload':{'nome':'C','material':'Caixa','quantidade':0,'unidade':'Caixa','autorizacao':'G','liberacao':'Escrito','saida':'2026-10-28T10:00'}}
+        with self.assertRaises(ValueError):app.validate_record(material)  # material leaving still needs at least one
+
+    def test_person_access_keeps_the_day_they_came_in(self):
+        self.assertIn(['entrada','Entrada','datetime-local',True],app.MODULES['pessoas']['fields'])
+        data={'module':'pessoas','payload':{'nome':'P','documento':'CNH 1','empresa':'E','motivo':'M','area':'RH','entrada':'2026-11-03T08:15'}}
+        self.assertEqual(app.validate_record(data)[1]['entrada'],'2026-11-03T08:15:00')  # a past day is accepted
+        with self.assertRaises(ValueError):app.validate_record({**data,'payload':{**data['payload'],'entrada':''}})
+
+    def test_equipment_return_names_who_brought_it_back(self):
+        m=app.MODULES['equipamentos']
+        self.assertEqual(m['return'],['devolucao','colaborador_retorno','conferente_prevencao'])
+        keys=[f[0] for f in m['fields']];self.assertEqual(keys[keys.index('devolucao')+1],'colaborador_retorno')
+        _,clean,_=app.validate_record({'module':'equipamentos','payload':{'nome':'ANA','matricula':'1','equipamento':'JET 01','retirada':'2026-11-10T08:00'}})
+        old={'module':'equipamentos','status':'Em aberto','payload':json.dumps(clean)}
+        with self.assertRaises(ValueError):app.merge_return(old,{'payload':{'devolucao':'2026-11-10T18:00','conferente_prevencao':'P'}})
+        done=app.merge_return(old,{'payload':{'devolucao':'2026-11-10T18:00','colaborador_retorno':'bia','conferente_prevencao':'P'}})
+        self.assertEqual((done['nome'],done['colaborador_retorno']),('ANA','BIA'))
+
+    def test_equipment_is_picked_from_a_fixed_list(self):
+        names=[f'{kind} {n:02d}' for kind in ('EMPILHADEIRA','PATOLADA','JET') for n in (1,2,3)]
+        self.assertIn(['equipamento','Equipamento','select',True,names],app.MODULES['equipamentos']['fields'])
+        data={'module':'equipamentos','payload':{'nome':'ANA','matricula':'1','equipamento':'JET 02','retirada':'2026-11-10T08:00'}}
+        self.assertEqual(app.validate_record(data)[1]['equipamento'],'JET 02')
+        with self.assertRaises(ValueError):app.validate_record({**data,'payload':{**data['payload'],'equipamento':'COLETOR'}})
+        self.assertEqual(app.MODULES['equipamentos']['returnOptional'],['conferente_prevencao'])
+        raw=urllib.request.urlopen(self.base+'/app.js').read().decode('utf-8')
+        self.assertIn("m.returnOptional?.includes(f[0])",raw)  # the return form leaves it unstarred
+
+    def test_records_saved_before_the_equipment_list_can_still_be_returned(self):
+        legacy={'matricula':'9001','nome':'ANA','equipamento':'EMPILHADEIRA','retirada':'2026-11-06T15:10'}  # saved as free text
+        old={'module':'equipamentos','status':'Em aberto','payload':json.dumps(legacy)}
+        done=app.merge_return(old,{'payload':{'devolucao':'2026-11-10T21:28','colaborador_retorno':'PAULO'}})
+        self.assertEqual(done['equipamento'],'EMPILHADEIRA')
+        self.assertEqual(app.validate_record({'module':'equipamentos','payload':legacy},saved=legacy)[1]['equipamento'],'EMPILHADEIRA')  # admin edit keeps it
+        with self.assertRaises(ValueError):app.validate_record({'module':'equipamentos','payload':legacy})  # a new record must use the list
+        with self.assertRaises(ValueError):app.validate_record({'module':'equipamentos','payload':{**legacy,'equipamento':'COLETOR'}},saved=legacy)  # nor swap to another free value
+        raw=urllib.request.urlopen(self.base+'/app.js').read().decode('utf-8')
+        self.assertIn("value&&!options.includes(value)",raw)  # the edit form shows the saved value
+
+    def test_route_table_stacks_pairs_to_fit(self):
+        m=app.MODULES['rotas']
+        self.assertEqual(m['stack'],{'auxiliar':['condutor','Aux.'],'lacre':['saida','Lacre'],'lacre_retorno':['retorno','Lacre']})
+        keys=[f[0] for f in m['fields']]
+        for field,(host,_) in m['stack'].items():self.assertIn(host,keys);self.assertIn(field,keys)
+        raw=urllib.request.urlopen(self.base+'/app.js').read().decode('utf-8')
+        self.assertIn("if(m.stack?.[f[0]])return ''",raw);self.assertIn('m.fields.filter(f=>!m.stack?.[f[0]])',raw)
+
+    def test_matricula_comes_before_the_name(self):
+        for module in ('materiais','equipamentos','chaves'):
+            keys=[f[0] for f in app.MODULES[module]['fields']];self.assertEqual(keys[:2],['matricula','nome'],module)
+        raw=urllib.request.urlopen(self.base+'/app.js').read().decode('utf-8')
+        self.assertIn("i===mainColumn(m)",raw)  # the name stays highlighted
+
+    def test_route_names_are_suggested_from_the_employee_base(self):
+        raw=urllib.request.urlopen(self.base+'/bases.js').read().decode('utf-8')
+        self.assertIn("rotas:{rota:'rota',placa:'placa_caminhao'}",raw)  # condutor and auxiliar are no longer fixed lists
+        self.assertIn("rotas:['condutor','auxiliar']",raw);self.assertIn("equipamentos:['colaborador_retorno']",raw)
+
+    def test_route_records_who_released_it(self):
+        keys=[f[0] for f in app.MODULES['rotas']['fields']]
+        self.assertEqual(keys[keys.index('saida')+1],'liberado_por')
+        route={'module':'rotas','payload':{'rota':'R1','tipo':'Regular','placa':'ABC1D23','condutor':'C','lacre':'L1','saida':'2026-11-09T10:00','liberado_por':'fulano'}}
+        self.assertEqual(app.validate_record(route)[1]['liberado_por'],'FULANO')
+        with self.assertRaises(ValueError):app.validate_record({**route,'payload':{**route['payload'],'liberado_por':''}})
+
+    def test_return_asks_who_checked_for_prevention(self):
+        for module,payload,ret in [
+            ('equipamentos',{'nome':'C','matricula':'1','equipamento':'EMPILHADEIRA 01','retirada':'2026-11-06T10:00'},{'devolucao':'2026-11-06T15:00','colaborador_retorno':'Bia'}),
+            ('veiculos',{'placa':'ABC1234','motorista':'M','itinerario':'I','saida':'2026-11-06T10:00','km_inicial':10},{'retorno':'2026-11-06T15:00','km_final':20})]:
+            self.assertEqual(app.MODULES[module]['columns']['conferente_prevencao'],'Prevenção')
+            _,clean,status=app.validate_record({'module':module,'payload':payload})  # not asked when the record is opened
+            self.assertEqual(status,'Em aberto')
+            old={'module':module,'status':'Em aberto','payload':json.dumps(clean)}
+            if module=='equipamentos':self.assertEqual(app.merge_return(old,{'payload':ret}).get('conferente_prevencao',''),'')  # optional here
+            else:
+                with self.assertRaises(ValueError):app.merge_return(old,{'payload':ret})
+            done=app.merge_return(old,{'payload':{**ret,'conferente_prevencao':'fulano'}})
+            self.assertEqual(done['conferente_prevencao'],'FULANO')
+
     def test_status_only_where_it_matters(self):
         material={'module':'materiais','payload':{'nome':'C','material':'Caixa','quantidade':2,'unidade':'Caixa','autorizacao':'G','liberacao':'Escrito','saida':'2026-10-28T10:00'}}
         self.assertEqual(app.validate_record(material)[2],'Concluído')
         with self.assertRaises(ValueError):app.validate_record({**material,'payload':{**material['payload'],'cargo':'X'}})
-        equipamento={'module':'equipamentos','payload':{'nome':'C','matricula':'1','equipamento':'Coletor','retirada':'2026-10-28T10:00'}}
+        equipamento={'module':'equipamentos','payload':{'nome':'C','matricula':'1','equipamento':'EMPILHADEIRA 01','retirada':'2026-10-28T10:00'}}
         self.assertEqual(app.validate_record(equipamento)[2],'Em aberto')  # still open until "Registrar retorno"
         self.assertFalse(app.MODULES['equipamentos'].get('showStatus',True))
 
@@ -376,7 +464,7 @@ class IntegrationTest(unittest.TestCase):
 
     def test_equipment_receiver_is_the_logged_in_user(self):
         m=app.MODULES['equipamentos']
-        self.assertNotIn('recebedor',[f[0] for f in m['fields']]);self.assertEqual(m['return'],['devolucao']);self.assertEqual(m['returnerLabel'],'Recebido por')
+        self.assertNotIn('recebedor',[f[0] for f in m['fields']]);self.assertEqual(m['return'],['devolucao','colaborador_retorno','conferente_prevencao']);self.assertEqual(m['returnerLabel'],'Recebido por')
         with closing(app.connect()) as c, c:
             for login in ('entrega-manha','recebe-tarde'):
                 c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':login,'username':login,'password':'senha-recebe-123','role':'operador'}),app.now()))
@@ -384,13 +472,13 @@ class IntegrationTest(unittest.TestCase):
         for client,login in ((morning,'entrega-manha'),(afternoon,'recebe-tarde')):
             self.assertEqual(self.req(client,'login','POST',{'username':login,'password':'senha-recebe-123'})[0],200)
         mt,tt=self.req(morning,'session')[1]['user']['csrf'],self.req(afternoon,'session')[1]['user']['csrf']
-        code,made=self.req(morning,'records','POST',{'module':'equipamentos','payload':{'nome':'Ana','matricula':'1','equipamento':'Chave','retirada':'2026-11-05T08:00'}},mt);self.assertEqual(code,201)
+        code,made=self.req(morning,'records','POST',{'module':'equipamentos','payload':{'nome':'Ana','matricula':'1','equipamento':'PATOLADA 01','retirada':'2026-11-05T08:00'}},mt);self.assertEqual(code,201)
         typed=self.req(afternoon,f'records/{made["id"]}/retorno','POST',{'payload':{'devolucao':'2026-11-05T14:00','recebedor':'Outro'},'version':1},tt)
         self.assertEqual(typed[0],400)  # nobody types the receiver anymore
-        self.assertEqual(self.req(afternoon,f'records/{made["id"]}/retorno','POST',{'payload':{'devolucao':'2026-11-05T14:00'},'version':1},tt)[0],200)
+        self.assertEqual(self.req(afternoon,f'records/{made["id"]}/retorno','POST',{'payload':{'devolucao':'2026-11-05T14:00','colaborador_retorno':'Ana','conferente_prevencao':'Fulano'},'version':1},tt)[0],200)
         record=next(r for r in self.req(afternoon,'records')[1] if r['id']==made['id'])
         self.assertEqual((record['creator'],record['returner'],record['status']),('ENTREGA-MANHA','RECEBE-TARDE','Concluído'))
-        self.assertEqual(app.validate_record({'module':'equipamentos','payload':{'nome':'A','matricula':'1','equipamento':'C','retirada':'2026-11-05T08:00','recebedor':'Bia'}})[1]['recebedor'],'Bia')  # names typed before the change stay
+        self.assertEqual(app.validate_record({'module':'equipamentos','payload':{'nome':'A','matricula':'1','equipamento':'JET 01','retirada':'2026-11-05T08:00','recebedor':'Bia'}})[1]['recebedor'],'Bia')  # names typed before the change stay
 
     def test_patrimonio_left_the_form_but_old_values_survive(self):
         self.assertNotIn('patrimonio',[f[0] for f in app.MODULES['equipamentos']['fields']])
@@ -398,16 +486,16 @@ class IntegrationTest(unittest.TestCase):
             c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':'patrimonio-admin','username':'patrimonio-admin','password':'senha-patrimonio-1','role':'admin'}),app.now()))
         admin=self.client();self.assertEqual(self.req(admin,'login','POST',{'username':'patrimonio-admin','password':'senha-patrimonio-1'})[0],200)
         at=self.req(admin,'session')[1]['user']['csrf']
-        new={'module':'equipamentos','payload':{'nome':'Ana','matricula':'1','equipamento':'Coletor','retirada':'2026-10-28T10:00'}}
+        new={'module':'equipamentos','payload':{'nome':'Ana','matricula':'1','equipamento':'EMPILHADEIRA 01','retirada':'2026-10-28T10:00'}}
         self.assertEqual(self.req(admin,'records','POST',new,at)[0],201)  # no longer required
         old_payload={**new['payload'],'patrimonio':'P-77'}
         with closing(app.connect()) as c, c:  # records saved while the field still existed
             uid=c.execute("SELECT id FROM users WHERE username='patrimonio-admin'").fetchone()[0]
             edited,returned=[c.execute("INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES('equipamentos',?,'Em aberto',?,?,?)",(json.dumps(old_payload),uid,app.now(),app.now())).lastrowid for _ in range(2)]
         saved=lambda rid:next(r for r in self.req(admin,'records')[1] if r['id']==rid)['payload']
-        code,_=self.req(admin,f'records/{edited}','PATCH',{**new,'status':'Em aberto','version':1,'payload':{**new['payload'],'equipamento':'Rádio'}},at);self.assertEqual(code,200)  # the form no longer sends it
-        self.assertEqual((saved(edited)['equipamento'],saved(edited)['patrimonio']),('RÁDIO','P-77'))
-        code,_=self.req(admin,f'records/{returned}/retorno','POST',{'payload':{'devolucao':'2026-10-28T12:00'},'version':1},at);self.assertEqual(code,200)
+        code,_=self.req(admin,f'records/{edited}','PATCH',{**new,'status':'Em aberto','version':1,'payload':{**new['payload'],'equipamento':'JET 02'}},at);self.assertEqual(code,200)  # the form no longer sends it
+        self.assertEqual((saved(edited)['equipamento'],saved(edited)['patrimonio']),('JET 02','P-77'))
+        code,_=self.req(admin,f'records/{returned}/retorno','POST',{'payload':{'devolucao':'2026-10-28T12:00','colaborador_retorno':'Ana','conferente_prevencao':'Fulano'},'version':1},at);self.assertEqual(code,200)
         self.assertEqual(saved(returned)['patrimonio'],'P-77')
         self.assertEqual(app.validate_record({'module':'equipamentos','payload':old_payload})[1]['patrimonio'],'P-77')  # old JSON exports still import
         with self.assertRaises(ValueError):app.validate_record({'module':'equipamentos','payload':{**new['payload'],'outro':'x'}})
@@ -517,7 +605,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual((marked('terceirizados_masculino'),marked('terceirizados_escaninhos')),([],[]))
 
     def test_text_fields_saved_uppercase(self):
-        _,clean,_=app.validate_record({'module':'rotas','payload':{'rota':'rota feira','tipo':'Regular','placa':'abc1d23','condutor':'joão da silva','lacre':'lc-01','saida':'2026-10-30T08:00','observacoes':'chegou às 8h'}})
+        _,clean,_=app.validate_record({'module':'rotas','payload':{'rota':'rota feira','tipo':'Regular','placa':'abc1d23','condutor':'joão da silva','lacre':'lc-01','saida':'2026-10-30T08:00','liberado_por':'L','observacoes':'chegou às 8h'}})
         self.assertEqual((clean['rota'],clean['condutor'],clean['lacre'],clean['placa'],clean['observacoes']),('ROTA FEIRA','JOÃO DA SILVA','LC-01','ABC1D23','CHEGOU ÀS 8H'))
         self.assertEqual((clean['tipo'],clean['saida']),('Regular','2026-10-30T08:00:00'))  # options and dates untouched
         _,clean,_=app.validate_record({'module':'chaves','payload':{'nome':'ana','setor':'rh','vestiario':'Feminino','armario':'3','retirada':'2026-10-30T08:00'}})
@@ -636,7 +724,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(admin,'bases')[1]['frota'],{'placa_caminhao':3,'placa_carro':1,'condutor':1,'auxiliar':1,'rota':1})
         # A plate from the list is accepted as it is by the record form.
         op_csrf=self.req(op,'session')[1]['user']['csrf']
-        route={'module':'rotas','payload':{'rota':'R1','tipo':'Regular','placa':listas['placa_caminhao'][0],'condutor':listas['condutor'][0],'lacre':'L1','saida':'2026-10-28T10:00'}}
+        route={'module':'rotas','payload':{'rota':'R1','tipo':'Regular','placa':listas['placa_caminhao'][0],'condutor':listas['condutor'][0],'lacre':'L1','saida':'2026-10-28T10:00','liberado_por':'L'}}
         self.assertEqual(self.req(op,'records','POST',route,op_csrf)[0],201)
         # Only the tab sent is touched.
         code,body=self.upload(admin,at,make_book({'Colaboradores':[['Matricula','Nome Completo'],[77002,'So Colaborador']]}))

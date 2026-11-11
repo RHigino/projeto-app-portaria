@@ -197,7 +197,8 @@ def allowed_modules(user):
     if user['role']=='admin' or not user['modules']:return set(MODULES)
     return set(json.loads(user['modules']))&set(MODULES)
 
-def validate_record(data):
+def validate_record(data,saved=None):
+    """saved: the record's current payload when it is edited or returned; a select value it already holds stays valid."""
     module = data.get('module')
     if not isinstance(module,str) or module not in MODULES:
         raise ValueError('Módulo inválido.')
@@ -219,11 +220,11 @@ def validate_record(data):
             try:
                 n=float(value)
                 if not 0<=n<=1000000000: raise ValueError()
-                if key in ('quantidade','volumes') and n<=0: raise ValueError()
+                if key=='quantidade' and n<=0: raise ValueError()  # volumes may be 0 (return with nothing to unload)
                 if key in ('volumes',) or (module=='grupos' and key=='quantidade'):
                     if not n.is_integer(): raise ValueError()
             except ValueError: raise ValueError(f'{label}: número inválido.')
-        if value and kind=='select' and value not in options[0]: raise ValueError(f'{label}: opção inválida.')
+        if value and kind=='select' and value not in options[0] and value!=(saved or {}).get(key): raise ValueError(f'{label}: opção inválida.')  # values saved before a list existed stay
         if value and kind=='datetime-local':
             try:
                 parsed=dt.datetime.fromisoformat(value)
@@ -262,8 +263,9 @@ def merge_return(old,data):
     if any(current.get(k) and str(v).strip() for k,v in given.items()):
         raise ValueError('Campo de retorno já preenchido. Peça a correção ao administrador.')
     merged={**current,**{k:v for k,v in given.items() if not current.get(k)}}
-    _,clean,_=validate_record({'module':old['module'],'payload':merged})
-    missing=[f[1] for f in MODULES[old['module']]['fields'] if f[0] in fields and not clean.get(f[0])]
+    _,clean,_=validate_record({'module':old['module'],'payload':merged},saved=current)
+    optional=MODULES[old['module']].get('returnOptional',[])  # may be left blank when the return is registered
+    missing=[f[1] for f in MODULES[old['module']]['fields'] if f[0] in fields and f[0] not in optional and not clean.get(f[0])]
     if missing:raise ValueError('Preencha '+', '.join(missing)+'.')
     return clean
 
@@ -546,7 +548,7 @@ class Handler(BaseHTTPRequestHandler):
                 if method=='DELETE':
                     c.execute('DELETE FROM copias_chave WHERE record_id=?',(rid,));c.execute('DELETE FROM records WHERE id=?',(rid,))
                 else:
-                    data=self.body();module,payload,status=validate_record(data)
+                    data=self.body();module,payload,status=validate_record(data,saved=json.loads(old['payload']))
                     if module!=old['module']:raise ValueError('Não é permitido trocar o módulo de um registro.')
                     saved=json.loads(old['payload']);payload={**{k:saved[k] for k in MODULES[module].get('retired',[]) if k in saved},**payload}  # the form no longer sends these
                     c.execute('BEGIN IMMEDIATE');check_doors(c,module,payload,status,rid)

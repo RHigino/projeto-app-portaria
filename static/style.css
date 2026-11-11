@@ -46,8 +46,8 @@
 .escbarra{width:120px;height:8px;border-radius:5px;background:#e3e5ee;overflow:hidden}
 .escbarra i{display:block;height:100%;width:0;background:#ef4444;border-radius:5px;transition:width .3s}
 @media(max-width:800px){.escbar{padding:0 16px 12px}.escmap{margin:0 16px 16px}.escmap.zoomed{max-height:65vh}.esctools{width:100%}}
-.fulltable th,.fulltable td{white-space:normal;padding-left:9px;padding-right:9px}
-.fulltable th{vertical-align:bottom;line-height:1.4}
+.fulltable th,.fulltable td{white-space:nowrap;padding-left:7px;padding-right:7px}
+.fulltable th{vertical-align:middle;line-height:1.4}td{text-transform:uppercase}td .empty{text-transform:none}
 .fulltable td{vertical-align:middle;line-height:1.45}
 .fulltable td:first-child,.fulltable th:first-child{padding-left:23px}
 .fulltable td:last-child,.fulltable th:last-child{padding-right:23px;white-space:nowrap}
