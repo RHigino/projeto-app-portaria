@@ -40,7 +40,9 @@ function doorCounts(key){
 }
 const plural=(n,one,many)=>`${n} ${n===1?one:many}`;
 const countsText=c=>`${plural(c.livre,'livre','livres')} · ${plural(c.ocupado,'ocupado','ocupados')} · ${plural(c.bloqueado,'bloqueado','bloqueados')}`;
-const occupancy=key=>doorCounts(key).ocupado/doorCount(MAPS[key])*100;
+// Blocked doors cannot be used, so they stay out of the occupancy: occupied / (occupied + free).
+const occupancyRate=c=>{const usable=c.ocupado+c.livre;return usable?c.ocupado/usable*100:0};
+const occupancy=key=>occupancyRate(doorCounts(key));
 const percent=value=>value.toLocaleString('pt-BR',{maximumFractionDigits:1})+'%';
 
 // Options of the door selects in the record form: the free doors, plus the one this record already holds.
@@ -67,7 +69,7 @@ function bindDoorForm(){
 function mapPanel(){
   const m=MAPS[mapView.current];
   const tabs=Object.entries(MAPS).map(([key,t])=>`<button class="maptab ${key===mapView.current?'active':''}" role="tab" aria-selected="${key===mapView.current}" data-action="esc-tab" data-map="${key}">${esc(t.tab)}<small>${percent(occupancy(key))}</small></button>`).join('');
-  return `<section class="panel escpanel"><div class="maptabs" role="tablist" aria-label="Escolha o mapa">${tabs}</div><div class="paneltitle"><div><h2>${esc(m.title)}</h2><p>Clique em uma porta para ver o cadastro, vincular um colaborador ou liberar o ${m.noun}.</p></div><div class="escstats"><div class="escocup" title="Portas ocupadas em relação ao total de ${doorCount(m)}"><span>Ocupação</span><strong id="esc-pct"></strong><div class="escbarra" aria-hidden="true"><i id="esc-bar"></i></div></div><span class="pill" id="esc-count"></span></div></div>
+  return `<section class="panel escpanel"><div class="maptabs" role="tablist" aria-label="Escolha o mapa">${tabs}</div><div class="paneltitle"><div><h2>${esc(m.title)}</h2><p>Clique em uma porta para ver o cadastro, vincular um colaborador ou liberar o ${m.noun}.</p></div><div class="escstats"><div class="escocup" title="Portas ocupadas em relação às portas disponíveis (as bloqueadas ficam fora do cálculo)"><span>Ocupação</span><strong id="esc-pct"></strong><div class="escbarra" aria-hidden="true"><i id="esc-bar"></i></div></div><span class="pill" id="esc-count"></span></div></div>
   <div class="escbar"><div class="esclegend"><span><i class="livre"></i>Livre</span><span><i class="ocupado"></i>Ocupado</span><span><i class="bloqueado"></i>Bloqueado</span><span><i class="terceirizado">T</i>Terceirizado</span></div>
   <div class="esctools"><input id="esc-go" type="number" min="${m.first}" max="${m.last}" step="1" inputmode="numeric" placeholder="Nº" aria-label="Número da porta para localizar"><button class="btn" data-action="esc-go">${icon('search')} Localizar</button>${isAdmin()?`<button class="btn" data-action="esc-seq">${icon('lock')} Bloquear sequência</button>`:''}
   <button class="iconbtn" data-action="esc-zoomout" title="Diminuir zoom" aria-label="Diminuir zoom">${icon('minus')}</button><span class="pill" id="esc-zoom" aria-live="polite"></span><button class="iconbtn" data-action="esc-zoomin" title="Aumentar zoom" aria-label="Aumentar zoom">${icon('plus')}</button><button class="iconbtn" data-action="esc-fit" title="Ver o mapa inteiro" aria-label="Ver o mapa inteiro">${icon('fit')}</button></div></div>
@@ -109,7 +111,7 @@ function paintMap(){
     if(r)nameLabel(door,m,r.payload.nome);
     if(third)thirdPartyBadge(door,m);
   }
-  const counts=doorCounts(key),rate=counts.ocupado/doorCount(m)*100;
+  const counts=doorCounts(key),rate=occupancyRate(counts);
   $('#esc-count').textContent=countsText(counts);
   $('#esc-pct').textContent=percent(rate);
   $('#esc-bar').style.width=rate+'%';

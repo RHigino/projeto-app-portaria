@@ -110,10 +110,8 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(admin,'logout','POST',{},token)[0],200)
         self.assertEqual(self.req(admin,'records')[0],401)
     def test_field_validation(self):
-        data={'module':'veiculos','payload':{'placa':'ABC1D23','motorista':'Condutor Teste','itinerario':'Local','saida':'2026-10-28T12:00','km_inicial':100,'km_final':90}}
-        with self.assertRaises(ValueError):app.validate_record(data)
-        data['payload']['km_final']=110
-        self.assertEqual(app.validate_record(data)[1]['km_final'],'110')
+        data={'module':'rotas','payload':{'rota':'R','tipo':app.MODULES['rotas']['fields'][1][4][0],'placa':'abc1d23','condutor':'C','lacre':'L','saida':'2026-10-28T12:00','liberado_por':'L'}}
+        self.assertEqual(app.validate_record(data)[1]['placa'],'ABC1D23')
         data['payload']['retorno']='2026-10-28T11:00'
         with self.assertRaises(ValueError):app.validate_record(data)
         data['payload'].pop('retorno');data['payload']['placa']='sem placa'
@@ -390,7 +388,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual((done['nome'],done['colaborador_retorno']),('ANA','BIA'))
 
     def test_equipment_is_picked_from_a_fixed_list(self):
-        names=[f'{kind} {n:02d}' for kind in ('EMPILHADEIRA','PATOLADA','JET') for n in (1,2,3)]
+        names=[f'{kind} {n:02d}' for kind in ('EMPILHADEIRA','PATOLADA','JET') for n in (1,2,3)]+['JET 04','JET 05']
         self.assertIn(['equipamento','Equipamento','select',True,names],app.MODULES['equipamentos']['fields'])
         data={'module':'equipamentos','payload':{'nome':'ANA','matricula':'1','equipamento':'JET 02','retirada':'2026-11-10T08:00'}}
         self.assertEqual(app.validate_record(data)[1]['equipamento'],'JET 02')
@@ -438,8 +436,7 @@ class IntegrationTest(unittest.TestCase):
 
     def test_return_asks_who_checked_for_prevention(self):
         for module,payload,ret in [
-            ('equipamentos',{'nome':'C','matricula':'1','equipamento':'EMPILHADEIRA 01','retirada':'2026-11-06T10:00'},{'devolucao':'2026-11-06T15:00','colaborador_retorno':'Bia'}),
-            ('veiculos',{'placa':'ABC1234','motorista':'M','itinerario':'I','saida':'2026-11-06T10:00','km_inicial':10},{'retorno':'2026-11-06T15:00','km_final':20})]:
+            ('equipamentos',{'nome':'C','matricula':'1','equipamento':'EMPILHADEIRA 01','retirada':'2026-11-06T10:00'},{'devolucao':'2026-11-06T15:00','colaborador_retorno':'Bia'})]:
             self.assertEqual(app.MODULES[module]['columns']['conferente_prevencao'],'Prevenção')
             _,clean,status=app.validate_record({'module':module,'payload':payload})  # not asked when the record is opened
             self.assertEqual(status,'Em aberto')
@@ -648,6 +645,7 @@ class IntegrationTest(unittest.TestCase):
         return response.code,json.loads(response.read())
     def test_spreadsheet_bases(self):
         with closing(app.connect()) as c, c:
+            c.execute('DELETE FROM base_colaboradores');c.execute('DELETE FROM base_terceiros');c.execute('DELETE FROM base_listas')  # other tests' records feed the bases
             for login in ('base-admin','base-op'):
                 c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':login,'username':login,'password':'senha-base-1234','role':'admin' if login=='base-admin' else 'operador'}),app.now()))
         admin,op,anonymous=self.client(),self.client(),self.client()
@@ -702,6 +700,7 @@ class IntegrationTest(unittest.TestCase):
 
     def test_spreadsheet_workbook_with_all_tabs(self):
         with closing(app.connect()) as c, c:
+            c.execute('DELETE FROM base_colaboradores');c.execute('DELETE FROM base_terceiros');c.execute('DELETE FROM base_listas')  # other tests' records feed the bases
             for login,role in (('book-admin','admin'),('book-op','operador')):
                 c.execute('INSERT INTO users(name,username,password,role,created_at) VALUES(?,?,?,?,?)',(*app.valid_user({'name':login,'username':login,'password':'senha-base-1234','role':role}),app.now()))
         admin,op=self.client(),self.client()
@@ -737,5 +736,76 @@ class IntegrationTest(unittest.TestCase):
         # Tabs that belong to no base, or two tabs for the same base, are refused.
         code,body=self.upload(admin,at,make_book({'Planilha1':[['a']]}));self.assertEqual(code,400);self.assertIn('Colaboradores',body['error'])
         code,body=self.upload(admin,at,make_book({'Colaboradores':[['a']],'Colaboradores antigos':[['a']]}));self.assertEqual(code,400);self.assertIn('Colaboradores antigos',body['error'])
+
+    def test_records_feed_the_bases_without_a_spreadsheet(self):
+        admin,at,op,ot=self.door_clients('aprende')
+        person={'module':'pessoas','payload':{'nome':'novo terceiro hoje','documento':'111.222.333-44','empresa':'limpeza sa','motivo':'SERVICO','area':'ADM','entrada':'2026-11-13T08:00'}}
+        self.assertEqual(self.req(op,'records','POST',person,ot)[0],201)
+        self.assertEqual(self.req(op,'bases/terceirizados?documento=11122233344')[1]['pessoa'],{'nome':'NOVO TERCEIRO HOJE','empresa':'LIMPEZA SA'})
+        self.assertEqual(self.req(op,'bases/terceirizados?q=terceiro%20hoje')[1],[{'nome':'NOVO TERCEIRO HOJE','empresa':'LIMPEZA SA'}])
+        rg={'module':'pessoas','payload':{**person['payload'],'nome':'visita rg','documento':'RG 55.444-3'}}
+        self.assertEqual(self.req(op,'records','POST',rg,ot)[0],201)
+        self.assertEqual(self.req(op,'bases/terceirizados?documento=554443')[1]['pessoa']['nome'],'VISITA RG')
+        material={'module':'materiais','payload':{'matricula':'880011','nome':'colaborador novo','material':'CAIXA','quantidade':'1','unidade':'UN','autorizacao':'X','liberacao':'Doação','saida':'2026-11-13T09:00'}}
+        material['payload'].update({k:app.MODULES['materiais']['fields'][i][4][0] for i,k in ((4,'unidade'),(6,'liberacao'))})
+        self.assertEqual(self.req(op,'records','POST',material,ot)[0],201)
+        self.assertEqual(self.req(op,'bases/colaboradores?q=880011')[1][0]['nome'],'COLABORADOR NOVO')
+        # Lists grow from the records too, and the admin can add an item without a spreadsheet.
+        rota={'module':'rotas','payload':{'rota':'ROTA APRENDIDA','tipo':app.MODULES['rotas']['fields'][1][4][0],'placa':'ABC1D23','condutor':'C','lacre':'L','saida':'2026-11-13T10:00','liberado_por':'L'}}
+        self.assertEqual(self.req(op,'records','POST',rota,ot)[0],201)
+        listas=self.req(op,'bootstrap')[1]['listas']
+        self.assertIn('ROTA APRENDIDA',listas['rota']);self.assertIn('ABC1D23',listas['placa_caminhao'])
+        self.assertEqual(self.req(op,'bases/listas','POST',{'tipo':'fornecedor','valor':'x'},ot)[0],403)
+        self.assertEqual(self.req(admin,'bases/listas','POST',{'tipo':'fornecedor','valor':' fornecedor manual '},at)[0],201)
+        self.assertEqual(self.req(admin,'bases/listas','POST',{'tipo':'placa_carro','valor':'invalida'},at)[0],400)
+        self.assertEqual(self.req(admin,'bases/listas','POST',{'tipo':'nada','valor':'x'},at)[0],400)
+        self.assertIn('FORNECEDOR MANUAL',self.req(op,'bootstrap')[1]['listas']['fornecedor'])
+        # Records saved before this change are learned once, when the system starts.
+        with closing(app.connect()) as c, c:
+            uid=c.execute('SELECT id FROM users LIMIT 1').fetchone()[0]
+            c.execute("INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES('pessoas',?,'Concluído',?,?,?)",(json.dumps({'nome':'LANCADO ANTES','documento':'99988877766','empresa':'E'}),uid,app.now(),app.now()))
+            c.execute("DELETE FROM settings WHERE key='bases_aprendidas'")
+        app.initialize()
+        self.assertEqual(self.req(op,'bases/terceirizados?documento=99988877766')[1]['pessoa']['nome'],'LANCADO ANTES')
+
+    def test_equipment_list_has_jet_04_and_05(self):
+        options=next(f[4] for f in app.MODULES['equipamentos']['fields'] if f[0]=='equipamento')
+        self.assertEqual(options[-2:],['JET 04','JET 05'])
+
+    def test_occupancy_leaves_blocked_doors_out(self):
+        raw=urllib.request.urlopen(self.base+'/mapas.js').read().decode('utf-8')
+        self.assertIn('const occupancyRate=',raw)
+        self.assertNotIn('ocupado/doorCount(',raw)
+
+    def test_sector_keys_replace_vehicles(self):
+        ids=[m['id'] for m in app.SCHEMA]
+        self.assertNotIn('veiculos',ids);self.assertEqual(ids[1],'chaves_setores')  # in the place vehicles had
+        setor=next(f for f in app.MODULES['chaves_setores']['fields'] if f[0]=='setor')
+        self.assertEqual(setor[4],['Medicamentos Especiais','Alimentos','Psicotrópicos','Termolábeis','Reversa 01','Reversa 02','Reversa 03','Visados 2'])
+        raw=urllib.request.urlopen(self.base+'/chaves_setores.js').read().decode('utf-8')
+        self.assertIn('function sectorKeysPanel',raw)
+        self.assertIn('/chaves_setores.js',urllib.request.urlopen(self.base+'/').read().decode('utf-8'))
+
+    def test_sector_key_is_taken_and_returned_once_at_a_time(self):
+        admin,at,op,ot=self.door_clients('setor')
+        take=lambda client,csrf,setor,mat='4401':self.req(client,'records','POST',{'module':'chaves_setores','payload':{'setor':setor,'matricula':mat,'nome':'pessoa '+mat,'retirada':'2026-11-17T08:00'}},csrf)
+        code,body=take(op,ot,'Alimentos');self.assertEqual(code,201)
+        code,err=take(op,ot,'Alimentos','4402');self.assertEqual(code,409);self.assertIn('Alimentos',err['error'])
+        self.assertEqual(self.req(op,'bases/colaboradores?q=4401')[1][0]['nome'],'PESSOA 4401')
+        self.assertEqual(self.req(admin,'chaves-setores/bloqueio','POST',{'setor':'Alimentos','bloqueado':True,'motivo':'x'},at)[0],409)  # in use
+        ret=self.req(op,f"records/{body['id']}/retorno",'POST',{'payload':{'devolucao':'2026-11-17T09:00'},'version':1},ot)
+        self.assertEqual(ret[0],200)
+        self.assertEqual(take(op,ot,'Alimentos','4402')[0],201)  # free again
+        # Blocking: admin only, with a reason; a blocked key cannot be taken.
+        block={'setor':'Psicotrópicos','bloqueado':True,'motivo':'fechadura trocada'}
+        self.assertEqual(self.req(op,'chaves-setores/bloqueio','POST',block,ot)[0],403)
+        self.assertEqual(self.req(admin,'chaves-setores/bloqueio','POST',{**block,'motivo':''},at)[0],400)
+        self.assertEqual(self.req(admin,'chaves-setores/bloqueio','POST',{**block,'setor':'Outro'},at)[0],400)
+        self.assertEqual(self.req(admin,'chaves-setores/bloqueio','POST',block,at)[0],200)
+        settings=self.req(op,'bootstrap')[1]['settings']
+        self.assertEqual(json.loads(settings['chaves_setores_bloqueadas'])['Psicotrópicos']['motivo'],'FECHADURA TROCADA')
+        code,err=take(op,ot,'Psicotrópicos');self.assertEqual(code,409);self.assertIn('bloqueada',err['error'])
+        self.assertEqual(self.req(admin,'chaves-setores/bloqueio','POST',{'setor':'Psicotrópicos','bloqueado':False},at)[0],200)
+        self.assertEqual(take(op,ot,'Psicotrópicos')[0],201)
 
 if __name__=='__main__':unittest.main(verbosity=2)

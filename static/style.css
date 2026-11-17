@@ -148,3 +148,15 @@ input::placeholder,textarea::placeholder{text-transform:none}
 .escterc text{fill:#fff;font-family:'DejaVu Sans',Arial,sans-serif;font-weight:700}
 .notice.terceiro{background:#efeafa;color:#47318a;margin-bottom:12px}
 .seqmotivo{margin-top:16px}
+
+.selectnew{display:flex;gap:8px;align-items:stretch}
+.selectnew select{flex:1;min-width:0}
+.btn.newitem{padding:0 14px}
+.newitembox{display:flex;gap:8px;margin-top:8px}
+.newitembox input{flex:1;min-width:0}
+.modalbody .formgrid .newitembox input{height:40px}
+.newitembox[hidden]{display:none}
+.badge.free{background:#e9f6ee;color:#3f8a5d}
+.sectorpanel{margin-bottom:22px}
+.sectoractions{flex-wrap:nowrap}
+.sectoractions .btn{padding:8px 12px}

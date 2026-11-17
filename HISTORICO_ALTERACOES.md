@@ -6,8 +6,8 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 
 - O projeto está em `Documents\projetospython\projeto-portariaprevencao\GateFlow`. Antes, ficava em `Downloads\GateFlow_Portaria_v1\GateFlow`.
 - O sistema está em implantação no CD, com o banco na pasta de rede.
-- Os testes automáticos passam: `python -m unittest` (37 testes).
-- **`dist\PrevencaoPerdas.exe` foi gerado em 10/11/2026, às 21:31**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado em uma pasta temporária, com banco descartável.
+- Os testes automáticos passam: `python -m unittest` (42 testes).
+- **`dist\PrevencaoPerdas.exe` foi gerado em 17/11/2026, às 09:08**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado em uma pasta temporária, com banco descartável.
 - **A pasta de rede ainda não recebeu esse `.exe`.** Até a troca, os computadores continuam com a versão anterior.
 
 ### Como está instalado no CD
@@ -61,6 +61,37 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 - **Condutor e Motorista usam a mesma lista:** o mesmo motorista atende Rotas e Veículos. Não há filtro por condutor na tabela de registros, porque o usuário confirmou que não precisa.
 
 ---
+
+## 17/11/2026 (09:08): mais setores nas Chaves de setores
+
+- Entraram os setores Reversa 01, Reversa 02, Reversa 03 e Visados 2. Agora são 8 setores, cada um com uma chave.
+
+## 17/11/2026 (08:58): menu em ordem alfabética
+
+- Dentro de cada grupo do menu, os módulos aparecem em ordem alfabética. Os grupos continuam na mesma sequência: Portaria; Operação logística (Chaves de setores, Devoluções, Rotas, Saída de materiais); Patrimônio e controle (Armários e Escaninhos, Equipamentos móveis). A mesma ordem vale para a tela Novo registro.
+
+## 17/11/2026 (08:47): Chaves de setores no lugar de Veículos
+
+- **Veículos saiu do sistema.** Os registros antigos continuam no banco, mas não aparecem mais nas telas. A cópia JSON exportada continua trazendo esses registros. O cartão do painel virou "Rotas em andamento".
+- **Novo módulo "Chaves de setores"**, no lugar de Veículos no menu. Ele cobre os setores Medicamentos Especiais, Alimentos, Psicotrópicos e Termolábeis, com **uma chave por setor**.
+  - Funciona como os armários, mas por tabela, sem desenho. Cada setor aparece como Livre, Em uso (com quem e desde quando) ou Bloqueada (com motivo, quem bloqueou e quando).
+  - **Entregar chave:** pela matrícula, com o nome preenchido pela base de colaboradores. A hora da retirada já vem preenchida. Um colaborador novo entra na base.
+  - **Registrar devolução:** qualquer usuário pode registrar. O registro é concluído e a chave volta a ficar livre.
+  - O servidor não deixa entregar uma chave que já está em uso ou bloqueada, nem quando dois computadores tentam ao mesmo tempo.
+  - **Bloquear e desbloquear:** só o administrador, sempre com motivo. Uma chave em uso não pode ser bloqueada. Tudo fica registrado na auditoria.
+  - O histórico completo das entregas aparece na tabela "Registros do módulo", logo abaixo.
+  - Um operador com abas restritas só vê o módulo se o administrador marcar essa aba nas permissões dele.
+
+## 13/11/2026 (15:02): bases alimentadas pelo próprio sistema, ocupação sem bloqueadas e JET 04/05
+
+- **As bases agora crescem com os lançamentos, no banco SQLite.** A planilha "Dados do projeto.xlsx" serve só para carregar os dados que já existiam. Antes, só a planilha alimentava as buscas, e um terceirizado recém-cadastrado não era encontrado.
+  - Cadastro de pessoas: nome, documento e empresa entram na base de terceirizados. Com 11 dígitos, o documento conta como CPF. Fora disso, conta como RG ou CNH. Um "RG", "CPF" ou "CNH" digitado antes do número é ignorado.
+  - Armários e Escaninhos, Saída de materiais e Equipamentos móveis: um colaborador novo entra na base pela matrícula e pelo nome. Quem já está na base mantém o nome, o cargo e a situação da planilha.
+  - Devoluções, Rotas e Veículos: os valores usados entram nas listas de escolha.
+  - Na primeira abertura deste `.exe`, os registros já gravados alimentam as bases uma única vez. Assim, o terceirizado cadastrado hoje passa a ser encontrado.
+  - Nos formulários, cada lista de escolha (transportador, fornecedor, motivo, rota, placas, condutor, auxiliar) tem o botão **+ Novo**, só para o administrador. Ele inclui o valor na lista na hora e já o deixa escolhido, sem planilha. A inclusão fica na auditoria. Uma primeira versão punha esse campo em Configurações; o usuário preferiu o botão no formulário.
+- **A ocupação dos armários e escaninhos não conta as portas bloqueadas:** ocupadas ÷ (ocupadas + livres).
+- **Equipamentos móveis:** entraram JET 04 e JET 05.
 
 ## 10/11/2026 (21:31): correção do retorno de equipamentos antigos e tabela de Rotas mais compacta
 

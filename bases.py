@@ -1,8 +1,12 @@
-"""Reference bases imported from one .xlsx workbook, one tab per base, and their lookups.
+"""Reference bases kept in SQLite and their lookups.
+
+Records saved in the app feed them (learn_record); one .xlsx workbook, one tab per base, only loads the data
+that already existed elsewhere.
 
 Standard library only: an .xlsx file is a zip of XML parts.
 """
 import io
+import json
 import re
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -66,8 +70,16 @@ def cpf_key(value):
     return number.zfill(11) if 0 < len(number) <= 11 else number
 
 
+DOC_LABEL = re.compile(r'^\s*(RG|CPF|CNH)(?![A-Z])[\s.:-]*', re.IGNORECASE)
+
+
+def without_label(value) -> str:
+    """Document number without the type typed before it ("RG 55.444-3" -> "55.444-3")."""
+    return DOC_LABEL.sub('', str(value))
+
+
 def rg_key(value):
-    return re.sub(r'[^0-9A-Z]', '', str(value).upper())
+    return re.sub(r'[^0-9A-Z]', '', without_label(value).upper())
 
 
 def clean_plate(value: str) -> str:
@@ -236,6 +248,69 @@ def import_base(c, base, rows, stamp):
         detail = f" ({counts['ignorados']} linhas sem os dados obrigatórios)" if counts['ignorados'] else ''
         raise ValueError(f'Nenhuma linha foi importada{detail}.')
     return counts
+
+
+# Record field -> choice list it feeds, by module (the same lists the forms offer).
+RECORD_LISTS = {
+    'devolucoes': {'transportador': 'transportador', 'fornecedor': 'fornecedor', 'motivo': 'motivo'},
+    'rotas': {'rota': 'rota', 'placa': 'placa_caminhao', 'condutor': 'condutor', 'auxiliar': 'auxiliar'},
+    'veiculos': {'placa': 'placa_carro', 'motorista': 'condutor'},
+}
+COLABORADOR_RECORDS = ('chaves', 'materiais', 'equipamentos', 'chaves_setores')
+CPF_DIGITS = 11
+
+
+def terceiro_key(document: str) -> tuple[str, str, str]:
+    """(chave, cpf, rg) of a typed document: 11 digits are kept as CPF, anything else as RG/CNH text."""
+    number = digits(document)
+    if len(number) == CPF_DIGITS and not re.search(r'[A-Za-z]', without_label(document)):
+        return 'CPF:' + number, number, ''
+    rg = rg_key(document)
+    return ('RG:' + rg, '', rg) if rg else ('', '', '')
+
+
+def add_list_value(c, kind: str, value: str) -> bool:
+    """Adds a value to a choice list; returns False when it was already there. Raises ValueError when invalid."""
+    if kind not in LIST_TYPES:
+        raise ValueError('Lista inválida.')
+    value = str(value).strip().upper()[:200]
+    if kind in PLATE_TYPES:
+        value = clean_plate(value)
+        if not value:
+            raise ValueError('Placa inválida. Use ABC1234 ou ABC1D23.')
+    if not value:
+        raise ValueError('Informe o valor a incluir na lista.')
+    return c.execute('INSERT OR IGNORE INTO base_listas VALUES(?,?)', (kind, value)).rowcount == 1
+
+
+def learn_record(c, module: str, payload: dict, stamp: str) -> None:
+    """Saves in the bases the people and values a record names, so the next lookups find them with no spreadsheet.
+
+    Third parties are updated with what the gate typed last; an employee already in the base keeps the
+    spreadsheet's name, role and situation.
+    """
+    value = lambda key: str(payload.get(key) or '').strip().upper()[:200]
+    if module == 'pessoas' and value('nome'):
+        key, cpf, rg = terceiro_key(value('documento'))
+        if key:
+            c.execute('INSERT INTO base_terceiros VALUES(?,?,?,?,?,?) ON CONFLICT(chave) DO UPDATE SET nome=excluded.nome,'
+                      "empresa=CASE WHEN excluded.empresa<>'' THEN excluded.empresa ELSE empresa END,updated_at=excluded.updated_at",
+                      (key, value('nome'), cpf, rg, value('empresa'), stamp))
+    if module in COLABORADOR_RECORDS and value('nome') and digits(value('matricula')):
+        matricula = value('matricula').lstrip('0') or value('matricula')
+        c.execute("INSERT OR IGNORE INTO base_colaboradores VALUES(?,?,?,'',?)", (matricula, value('nome'), value('cargo'), stamp))
+    for field, kind in RECORD_LISTS.get(module, {}).items():
+        if value(field):
+            try:
+                add_list_value(c, kind, value(field))
+            except ValueError:
+                pass  # a record value that is not a valid list item (e.g. an old plate) is just not listed
+
+
+def learn_all_records(c) -> None:
+    """Feeds the bases with every record saved before records fed them."""
+    for module, raw, stamp in c.execute('SELECT module, payload, updated_at FROM records ORDER BY id').fetchall():
+        learn_record(c, module, json.loads(raw), stamp)
 
 
 def summary(c):

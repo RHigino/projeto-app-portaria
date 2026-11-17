@@ -47,6 +47,9 @@ DOOR_MAPS = {
     'feminino': {'field': 'armario', 'first': PRIMEIRO_ARMARIO_FEMININO, 'last': ARMARIOS, 'name': 'armário feminino', 'vestiario': 'Feminino', 'setting': 'armarios_feminino_bloqueados', 'terceirizados': 'terceirizados_feminino'},
 }
 
+SECTOR_KEYS_MODULE = 'chaves_setores'  # one key per sector, taken and returned like a locker key, listed in a table
+SECTOR_KEYS_BLOCKED = 'chaves_setores_bloqueadas'  # settings key: {sector: {motivo, por, em}}
+
 class Conflict(ValueError):
     """Valid request that clashes with the current data (answered with 409)."""
 
@@ -124,6 +127,10 @@ def initialize():
                 upper={k:(v.upper() if k in keys and isinstance(v,str) else v) for k,v in payload.items()}
                 if upper!=payload:c.execute('UPDATE records SET payload=? WHERE id=?',(json.dumps(upper,ensure_ascii=False),rid))
             c.execute("INSERT INTO settings VALUES('texto_maiusculo','1')")
+        # Records saved before they fed the bases are learned once.
+        if not c.execute("SELECT 1 FROM settings WHERE key='bases_aprendidas'").fetchone():
+            bases.learn_all_records(c)
+            c.execute("INSERT INTO settings VALUES('bases_aprendidas','1')")
 
 def backup_database(force=False):
     """Copies the database to <db folder>/backups unless a recent copy exists (any machine may have made it)."""
@@ -246,7 +253,6 @@ def validate_record(data,saved=None):
         if bool(clean.get('armario'))!=bool(clean.get('vestiario')): raise ValueError('Informe o vestiário e o número do armário juntos.')
     for a,b in [('entrada','saida'),('saida','retorno'),('retirada','devolucao')]:
         if clean.get(a) and clean.get(b) and clean[b]<clean[a]: raise ValueError('O retorno/saída não pode ser anterior à entrada/retirada.')
-    if clean.get('km_final') and float(clean['km_final'])<float(clean['km_inicial']): raise ValueError('KM final menor que o KM inicial.')
     status=data.get('status','Em aberto')
     if status not in STATUSES: raise ValueError('Situação inválida.')
     if MODULES[module].get('status') is False: status='Concluído'  # no open/closed life cycle
@@ -351,9 +357,42 @@ def door_links(payload):
     if payload.get('armario'):links.append((payload['vestiario'].lower(),int(payload['armario'])))
     return links
 
+def sector_options():
+    return next(f[4] for f in MODULES[SECTOR_KEYS_MODULE]['fields'] if f[0]=='setor')
+
+def blocked_sectors(c):
+    row=c.execute('SELECT value FROM settings WHERE key=?',(SECTOR_KEYS_BLOCKED,)).fetchone()
+    return json.loads(row[0]) if row else {}
+
+def sector_holder(c,sector,exclude=None):
+    """Id of the open record holding this sector's key, if any."""
+    row=c.execute("SELECT id FROM records WHERE module=? AND status='Em aberto' AND json_extract(payload,'$.setor')=? AND COALESCE(json_extract(payload,'$.devolucao'),'')='' AND id IS NOT ?",(SECTOR_KEYS_MODULE,sector,exclude)).fetchone()
+    return row[0] if row else None
+
+def check_sector_key(c,payload,exclude=None):
+    sector=payload['setor']
+    kept=exclude is not None and sector_holder(c,sector)==exclude  # editing the record that already holds it
+    if sector in blocked_sectors(c) and not kept:raise Conflict(f'A chave de {sector} está bloqueada.')
+    if sector_holder(c,sector,exclude):raise Conflict(f'A chave de {sector} já está em uso. Registre a devolução antes de entregá-la a outra pessoa.')
+
+def block_sector(c,user,data):
+    """Blocks or unblocks one sector's key (admin). A key in use cannot be blocked."""
+    sector=data.get('setor');blocked=data.get('bloqueado')
+    if sector not in sector_options():raise ValueError('Setor inválido.')
+    if type(blocked) is not bool:raise ValueError('Situação inválida.')
+    reason=valid_block_reason(data.get('motivo','')) if blocked else ''
+    c.execute('BEGIN IMMEDIATE')
+    if blocked and sector_holder(c,sector):raise Conflict(f'A chave de {sector} está em uso. Registre a devolução antes de bloquear.')
+    current=blocked_sectors(c)
+    updated={**current,sector:{'motivo':reason,'por':user['name'],'em':now()}} if blocked else {k:v for k,v in current.items() if k!=sector}
+    save_setting(c,SECTOR_KEYS_BLOCKED,json.dumps(updated,ensure_ascii=False))
+    audit(c,user,'Bloqueio' if blocked else 'Desbloqueio',f'Chave de {sector}',reason);c.commit()
+
 def check_doors(c,module,payload,status,exclude=None):
-    """Call inside BEGIN IMMEDIATE so two computers cannot take the same door at once."""
-    if module!='chaves' or status!='Em aberto' or payload.get('devolucao'):return
+    """Call inside BEGIN IMMEDIATE so two computers cannot take the same door (or sector key) at once."""
+    if status!='Em aberto' or payload.get('devolucao'):return
+    if module==SECTOR_KEYS_MODULE:return check_sector_key(c,payload,exclude)
+    if module!='chaves':return
     for mapa,number in door_links(payload):
         door=DOOR_MAPS[mapa];name=door['name']
         # A record saved before the room's range existed keeps its door, but nobody can take a new one out of the range.
@@ -443,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
         path=urlsplit(self.path).path.rstrip('/') or '/'
         if not path.startswith('/api/'):
             if method!='GET':return self.send(405,{'error':'Método inválido.'})
-            files={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/logo.png':('logo.png','image/png'),'/mapas.js':('mapas.js','text/javascript; charset=utf-8'),'/bases.js':('bases.js','text/javascript; charset=utf-8'),'/layout_cd.svg':('layout_cd.svg','image/svg+xml; charset=utf-8'),'/escaninhos.svg':('escaninhos.svg','image/svg+xml; charset=utf-8'),'/vestiario.svg':('vestiario.svg','image/svg+xml; charset=utf-8')}
+            files={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/logo.png':('logo.png','image/png'),'/mapas.js':('mapas.js','text/javascript; charset=utf-8'),'/bases.js':('bases.js','text/javascript; charset=utf-8'),'/chaves_setores.js':('chaves_setores.js','text/javascript; charset=utf-8'),'/layout_cd.svg':('layout_cd.svg','image/svg+xml; charset=utf-8'),'/escaninhos.svg':('escaninhos.svg','image/svg+xml; charset=utf-8'),'/vestiario.svg':('vestiario.svg','image/svg+xml; charset=utf-8')}
             if path not in files:return self.send(404,{'error':'Não encontrado.'})
             f,ct=files[path];return self.send(200,raw=(ROOT/'static'/f).read_bytes(),ctype=ct)
         if method!='GET' and not self.allowed_origin():return self.send(403,{'error':'Origem não autorizada.'})
@@ -505,6 +544,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not admin and data.get('status','Em aberto')!='Em aberto':return self.send(403,{'error':'Operadores só podem cadastrar registros em aberto.'})
                 c.execute('BEGIN IMMEDIATE');check_doors(c,module,payload,status)
                 stamp=now();cursor=c.execute('INSERT INTO records(module,payload,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?)',(module,json.dumps(payload,ensure_ascii=False),status,user['id'],stamp,stamp))
+                bases.learn_record(c,module,payload,stamp)
                 audit(c,user,'Novo registro',cursor.lastrowid,module);c.commit();return self.send(201,{'id':cursor.lastrowid})
             if path.startswith('/api/records/') and path.endswith('/retorno') and method=='POST':
                 rid=int(path.split('/')[-2]);data=self.body();old=c.execute('SELECT * FROM records WHERE id=?',(rid,)).fetchone()
@@ -513,6 +553,7 @@ class Handler(BaseHTTPRequestHandler):
                 if old['module']=='chaves' and open_copy(c,rid):raise Conflict(COPY_STILL_OUT)
                 cursor=c.execute("UPDATE records SET payload=?,status='Concluído',updated_at=?,returned_by=?,returned_at=?,version=version+1 WHERE id=? AND version=? AND status='Em aberto'",(json.dumps(payload,ensure_ascii=False),stamp,user['id'],stamp,rid,data.get('version')))
                 if cursor.rowcount!=1:return self.send(409,{'error':'Este registro mudou. Atualize a tela antes de registrar o retorno.'})
+                bases.learn_record(c,old['module'],payload,stamp)
                 audit(c,user,'Retorno registrado',rid,old['module']);c.commit();return self.send(200,{'ok':True})
             if path.startswith('/api/records/') and path.endswith('/copias') and method=='POST':
                 rid=int(path.split('/')[-2]);data=self.body()
@@ -536,6 +577,11 @@ class Handler(BaseHTTPRequestHandler):
                 audit(c,user,'Cópia de chave devolvida',row['record_id'],row['motivo']);c.commit();return self.send(200,{'ok':True})
             if not admin:return self.send(403,{'error':'Apenas o administrador pode realizar esta ação.'})
             if path=='/api/bases' and method=='GET':return self.send(200,bases.summary(c))
+            if path=='/api/bases/listas' and method=='POST':
+                data=self.body();kind=data.get('tipo');c.execute('BEGIN IMMEDIATE')
+                added=bases.add_list_value(c,kind if isinstance(kind,str) else '',data.get('valor','') if isinstance(data.get('valor',''),str) else '')
+                if added:audit(c,user,'Item incluído na lista',kind,str(data.get('valor','')).strip().upper()[:200])
+                c.commit();return self.send(201 if added else 200,{'incluido':added})
             if path=='/api/bases' and method=='POST':
                 data=self.xlsx_body();c.execute('BEGIN IMMEDIATE')
                 result=bases.import_workbook(c,data,now())
@@ -555,6 +601,7 @@ class Handler(BaseHTTPRequestHandler):
                     if module=='chaves' and (status!='Em aberto' or payload.get('devolucao')) and open_copy(c,rid):raise Conflict(COPY_STILL_OUT)
                     cursor=c.execute('UPDATE records SET payload=?,status=?,updated_at=?,version=version+1 WHERE id=? AND version=?',(json.dumps(payload,ensure_ascii=False),status,now(),rid,data.get('version')))
                     if cursor.rowcount!=1:return self.send(409,{'error':'Este registro mudou. Atualize a tela antes de editar.'})
+                    bases.learn_record(c,module,payload,now())
                 audit(c,user,'Exclusão' if method=='DELETE' else 'Edição',rid,old['module']);c.commit();return self.send(200,{'ok':True})
             if path=='/api/users' and method=='GET':
                 rows=c.execute('SELECT id,name,username,role,active,created_at,last_seen,modules,(active=1 AND last_seen>? AND EXISTS(SELECT 1 FROM sessions s WHERE s.user_id=users.id AND s.expires>?)) online FROM users ORDER BY id',(time.time()-ONLINE_WINDOW,time.time()))
@@ -613,6 +660,8 @@ class Handler(BaseHTTPRequestHandler):
                 if blocked and door_holder(c,mapa,number):raise Conflict(f"O {door['name']} {number} está ocupado. Libere-o antes de bloquear.")
                 set_doors_blocked(c,user,mapa,[number],blocked,reason)
                 audit(c,user,'Bloqueio' if blocked else 'Desbloqueio',f"{door['name']} {number}",reason);c.commit();return self.send(200,{'ok':True})
+            if path=='/api/chaves-setores/bloqueio' and method=='POST':
+                block_sector(c,user,self.body());return self.send(200,{'ok':True})
             if path=='/api/mapas/bloqueio-sequencia' and method=='POST':
                 return self.send(200,block_sequence(c,user,self.body()))
             if path=='/api/mapas/terceirizado' and method=='POST':

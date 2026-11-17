@@ -1,17 +1,16 @@
 'use strict';
-// Bases imported from .xlsx (Configurações) and the lookups they power in the record forms.
+// Bases kept in the database: fed by every record saved in the app, loaded once from .xlsx (Configurações) and the lookups they power.
 const BASES_INFO=[
-  ['colaboradores','Colaboradores','Aba Colaboradores','Situação, Matricula, Nome Completo, Cargo','Pela matrícula, preenche nome e cargo em Armários e Escaninhos, Saída de materiais e Equipamentos móveis. Sugere nomes ao digitar o condutor e o auxiliar em Rotas e o colaborador de retorno em Equipamentos móveis.'],
-  ['terceirizados','Terceirizados','Aba Acesso de Terceiros','Nome, CPF, RG, Empresa/Transportadora','Pelo CPF ou RG, preenche nome e empresa no Cadastro de pessoas.'],
+  ['colaboradores','Colaboradores','Aba Colaboradores','Situação, Matricula, Nome Completo, Cargo','Pela matrícula, preenche nome e cargo em Armários e Escaninhos, Chaves de setores, Saída de materiais e Equipamentos móveis. Sugere nomes ao digitar o condutor e o auxiliar em Rotas e o colaborador de retorno em Equipamentos móveis.'],
+  ['terceirizados','Terceirizados','Aba Acesso de Terceiros','Nome, CPF, RG, Empresa/Transportadora','Pelo CPF ou RG, preenche nome e empresa no Cadastro de pessoas. Cada pessoa cadastrada entra na base.'],
   ['fornecedores','Fornecedores','Aba Fornecedores','Transportador, Fornecedor, Motivo','Listas para escolher em Devoluções.'],
-  ['frota','Placas e condutores','Aba Placa do carro e caminhão','Placas dos Caminhoes, Placa do Carro, Condutor, Auxiliar, Rota','Listas para escolher em Rotas (rota e placa do caminhão) e em Veículos (placa do carro e motorista).'],
+  ['frota','Placas e condutores','Aba Placa do carro e caminhão','Placas dos Caminhoes, Placa do Carro, Condutor, Auxiliar, Rota','Listas para escolher em Rotas (rota e placa do caminhão).'],
 ];
-const COLABORADOR_MODULES=['chaves','materiais','equipamentos'];
+const COLABORADOR_MODULES=['chaves','materiais','equipamentos','chaves_setores'];
 // Form field -> choice list imported from the workbook, by module. Shown as a regular select.
 const MODULE_SELECTS={
   devolucoes:{transportador:'transportador',fornecedor:'fornecedor',motivo:'motivo'},
   rotas:{rota:'rota',placa:'placa_caminhao'},
-  veiculos:{placa:'placa_carro',motorista:'condutor'},
 };
 // Form fields that suggest names from the employee base while typing; any other name can still be typed.
 const NAME_SUGGEST={
@@ -23,7 +22,7 @@ const XLSX_TYPE='application/vnd.openxmlformats-officedocument.spreadsheetml.she
 const XLSX_MAX=10*1024*1024;
 
 function basesPanel(){
-  return `<section class="panel" id="bases-panel"><h2>Bases de dados (.xlsx)</h2><p>Importe uma única planilha, com uma aba para cada base. Só as abas presentes no arquivo são atualizadas.</p><button class="btn" data-action="base-import">${icon('upload')} Importar planilha .xlsx</button><p class="baseinfo" id="base-result" role="status"></p>${BASES_INFO.map(([key,name,tab,columns,use])=>`<div class="baserow"><div><strong>${name}</strong><small>${tab} · Colunas: ${columns}</small><small>${use}</small><small class="baseinfo" id="base-info-${key}">Carregando…</small></div></div>`).join('')}<input type="file" id="basefile" accept=".xlsx,${XLSX_TYPE}" hidden><p class="formmeta">Reimportar atualiza quem já existe (matrícula, CPF/RG ou valor) e acrescenta os novos; nada é apagado. Datas de admissão e nascimento e Gestor não são gravados. Placas inválidas ficam fora das listas.</p></section>`;
+  return `<section class="panel" id="bases-panel"><h2>Bases de dados</h2><p>As bases ficam no banco do sistema e crescem sozinhas com cada lançamento (pessoas, colaboradores, rotas, placas, fornecedores). A planilha .xlsx serve só para carregar os dados que você já tinha: uma única planilha, com uma aba para cada base. Para um valor novo numa lista de escolha, use o botão <b>+ Novo</b> ao lado da lista, no próprio formulário.</p><button class="btn" data-action="base-import">${icon('upload')} Importar planilha .xlsx</button><p class="baseinfo" id="base-result" role="status"></p>${BASES_INFO.map(([key,name,tab,columns,use])=>`<div class="baserow"><div><strong>${name}</strong><small>${tab} · Colunas: ${columns}</small><small>${use}</small><small class="baseinfo" id="base-info-${key}">Carregando…</small></div></div>`).join('')}<input type="file" id="basefile" accept=".xlsx,${XLSX_TYPE}" hidden><p class="formmeta">Reimportar atualiza quem já existe (matrícula, CPF/RG ou valor) e acrescenta os novos; nada é apagado. Datas de admissão e nascimento e Gestor não são gravados. Placas inválidas ficam fora das listas.</p></section>`;
 }
 
 const when=value=>value?' · atualizado em '+fmt(value):'';
@@ -33,10 +32,10 @@ async function mountBases(){
   input.onchange=()=>uploadBase(input);
   try{
     const s=await api('bases');
-    $('#base-info-colaboradores').textContent=s.colaboradores.total?`${s.colaboradores.total} colaboradores${when(s.colaboradores.atualizado)}`:'Nenhuma planilha importada.';
-    $('#base-info-terceirizados').textContent=s.terceirizados.total?`${s.terceirizados.total} terceirizados${when(s.terceirizados.atualizado)}`:'Nenhuma planilha importada.';
-    const f=s.fornecedores;$('#base-info-fornecedores').textContent=f.transportador+f.fornecedor+f.motivo?`${f.transportador} transportadores · ${f.fornecedor} fornecedores · ${f.motivo} motivos`:'Nenhuma planilha importada.';
-    const v=s.frota;$('#base-info-frota').textContent=v.rota+v.placa_caminhao+v.placa_carro+v.condutor+v.auxiliar?`${v.rota} rotas · ${v.placa_caminhao} placas de caminhão · ${v.placa_carro} placas de carro · ${v.condutor} condutores · ${v.auxiliar} auxiliares`:'Nenhuma planilha importada.';
+    $('#base-info-colaboradores').textContent=s.colaboradores.total?`${s.colaboradores.total} colaboradores${when(s.colaboradores.atualizado)}`:'Base vazia.';
+    $('#base-info-terceirizados').textContent=s.terceirizados.total?`${s.terceirizados.total} terceirizados${when(s.terceirizados.atualizado)}`:'Base vazia.';
+    const f=s.fornecedores;$('#base-info-fornecedores').textContent=f.transportador+f.fornecedor+f.motivo?`${f.transportador} transportadores · ${f.fornecedor} fornecedores · ${f.motivo} motivos`:'Base vazia.';
+    const v=s.frota;$('#base-info-frota').textContent=v.rota+v.placa_caminhao+v.placa_carro+v.condutor+v.auxiliar?`${v.rota} rotas · ${v.placa_caminhao} placas de caminhão · ${v.placa_carro} placas de carro · ${v.condutor} condutores · ${v.auxiliar} auxiliares`:'Base vazia.';
   }catch(err){for(const el of document.querySelectorAll('.baserow .baseinfo'))el.textContent='Não foi possível consultar as bases: '+err.message}
 }
 
@@ -118,16 +117,46 @@ function attachSuggest(input){
   });
   return {show,hide};
 }
-// Swaps a text input for a select with the list. With no list imported yet, the input stays.
-// A saved value outside the list stays available when editing.
-function attachSelect(input,options){
+const makeOption=(value,label=value)=>{const o=document.createElement('option');o.value=value;o.textContent=label;return o};
+// Swaps a text input for a select with the list. With an empty list the input stays, and what is typed joins the list.
+// A saved value outside the list stays available when editing. The admin gets "+ Novo" to add a value right there.
+function attachSelect(input,options,kind){
   if(!options.length)return;
   const select=document.createElement('select');
   select.id=input.id;select.name=input.name;select.required=input.required;
   const values=input.value&&!options.includes(input.value)?[input.value,...options]:options;
-  select.replaceChildren(...[['','Selecione…'],...values.map(v=>[v,v])].map(([value,label])=>{const o=document.createElement('option');o.value=value;o.textContent=label;return o}));
+  select.replaceChildren(makeOption('','Selecione…'),...values.map(v=>makeOption(v)));
   select.value=input.value;
   input.replaceWith(select);
+  if(isAdmin())attachNewItem(select,kind);
+}
+function attachNewItem(select,kind){
+  const row=document.createElement('div');row.className='selectnew';
+  select.replaceWith(row);
+  const add=document.createElement('button');add.type='button';add.className='btn newitem';add.textContent='+ Novo';
+  add.title='Incluir um valor novo nesta lista';
+  const box=document.createElement('div');box.className='newitembox';box.hidden=true;
+  const value=document.createElement('input');value.maxLength=200;value.placeholder='Novo valor';value.setAttribute('aria-label','Novo valor da lista');
+  const save=document.createElement('button');save.type='button';save.className='btn primary';save.textContent='Incluir';
+  const cancel=document.createElement('button');cancel.type='button';cancel.className='btn';cancel.textContent='Cancelar';
+  box.append(value,save,cancel);row.append(select,add);row.after(box);
+  const close=()=>{box.hidden=true;value.value='';select.focus()};
+  add.onclick=()=>{box.hidden=false;value.focus()};
+  cancel.onclick=close;
+  const submit=async()=>{
+    save.disabled=true;
+    try{
+      const typed=value.value.trim().toUpperCase();
+      await api('bases/listas',{method:'POST',body:JSON.stringify({tipo:kind,valor:typed})});
+      const lists=await api('bootstrap').then(b=>b.listas);  // the server may have normalized it (plates)
+      state.listas=lists;
+      const saved=lists[kind].find(v=>v===typed||v===typed.replace(/[\s-]/g,''))||typed;
+      if(![...select.options].some(o=>o.value===saved))select.append(makeOption(saved));
+      select.value=saved;close();toast('Incluído na lista.');
+    }catch(err){toast(err.message,true)}finally{save.disabled=false}
+  };
+  save.onclick=submit;
+  value.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();submit()}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close()}});
 }
 async function lookup(input,request,onResult){
   try{onResult(await api(request))}catch(err){setHint(input,'Não foi possível consultar a base: '+err.message,true)}
@@ -195,7 +224,7 @@ function bindBaseLookups(moduleId,form=$('#recordform')){
   if(moduleId==='pessoas')bindTerceiro(form);
   for(const [field,list] of Object.entries(MODULE_SELECTS[moduleId]||{})){
     const input=form.querySelector('#f-'+field);
-    if(input)attachSelect(input,state.listas?.[list]||[]);
+    if(input)attachSelect(input,state.listas?.[list]||[],list);
   }
   for(const field of NAME_SUGGEST[moduleId]||[]){
     const input=form.querySelector('#f-'+field);
