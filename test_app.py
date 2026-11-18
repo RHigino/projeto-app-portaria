@@ -658,7 +658,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.upload(admin,at,b'nao e planilha')[0],400)
         code,body=self.upload(admin,at,make_book({'Terceirizados':colaboradores}));self.assertEqual(code,400);self.assertIn('CPF',body['error'])  # wrong columns: no CPF/RG
         code,body=self.upload(admin,at,make_book({'Colaboradores':colaboradores}));self.assertEqual(code,200)
-        self.assertEqual(body['abas'],{'colaboradores':{'novos':2,'atualizados':0,'ignorados':0}})
+        self.assertEqual(body['abas'],{'colaboradores':{'novos':2,'atualizados':0,'ignorados':0,'sem_matricula':0}})
         found=self.req(op,'bases/colaboradores?q=114993')[1]
         self.assertEqual(found[0],{'matricula':'114993','nome':'RAFAEL HIGINO SANTOS','cargo':'SUPERVISOR DE INVENTÁRIO','situacao':'ATIVO'})
         self.assertEqual([f['matricula'] for f in self.req(op,'bases/colaboradores?q=souz')[1]],['2001'])  # name search
@@ -667,7 +667,7 @@ class IntegrationTest(unittest.TestCase):
             self.assertEqual(c.execute('PRAGMA table_info(base_colaboradores)').fetchall()[-1][1],'updated_at')
             self.assertNotIn('NASCIMENTO',json.dumps([list(r) for r in c.execute('SELECT * FROM base_colaboradores')]))  # birth date and manager are not stored
         colaboradores[2][5]='Coordenador';colaboradores.append(['Ativo',3003,'Novo Colaborador',1,1,'Auxiliar','X'])
-        self.assertEqual(self.upload(admin,at,make_book({'Colaboradores':colaboradores},shared=False))[1]['abas']['colaboradores'],{'novos':1,'atualizados':2,'ignorados':0})
+        self.assertEqual(self.upload(admin,at,make_book({'Colaboradores':colaboradores},shared=False))[1]['abas']['colaboradores'],{'novos':1,'atualizados':2,'ignorados':0,'sem_matricula':0})
         self.assertEqual(self.req(op,'bases/colaboradores?q=114993')[1][0]['cargo'],'COORDENADOR')
         terceiros=[['Nome','CPF','RG','Empresa/Transportadora'],['João Motorista',1234567890,'','Transportes Bahia'],['Ana Ajudante','','12.345.678-9','Log Express'],['Sem Documento','','','X']]
         self.assertEqual(self.upload(admin,at,make_book({'Terceirizados':terceiros}))[1]['abas']['terceirizados'],{'novos':2,'atualizados':0,'ignorados':1})
@@ -760,6 +760,13 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.req(admin,'bases/listas','POST',{'tipo':'placa_carro','valor':'invalida'},at)[0],400)
         self.assertEqual(self.req(admin,'bases/listas','POST',{'tipo':'nada','valor':'x'},at)[0],400)
         self.assertIn('FORNECEDOR MANUAL',self.req(op,'bootstrap')[1]['listas']['fornecedor'])
+        # The admin removes an item with the "x" of "Editar"; the operator cannot.
+        remove={'tipo':'fornecedor','valor':'FORNECEDOR MANUAL'}
+        self.assertEqual(self.req(op,'bases/listas','DELETE',remove,ot)[0],403)
+        self.assertEqual(self.req(admin,'bases/listas','DELETE',remove,at),(200,{'excluido':True}))
+        self.assertNotIn('FORNECEDOR MANUAL',self.req(op,'bootstrap')[1]['listas']['fornecedor'])
+        self.assertEqual(self.req(admin,'bases/listas','DELETE',remove,at),(404,{'error':'Item não encontrado na lista.'}))
+        self.assertEqual(self.req(admin,'bases/listas','DELETE',{'tipo':'nada','valor':'x'},at)[0],400)
         # Records saved before this change are learned once, when the system starts.
         with closing(app.connect()) as c, c:
             uid=c.execute('SELECT id FROM users LIMIT 1').fetchone()[0]
@@ -807,5 +814,35 @@ class IntegrationTest(unittest.TestCase):
         code,err=take(op,ot,'Psicotrópicos');self.assertEqual(code,409);self.assertIn('bloqueada',err['error'])
         self.assertEqual(self.req(admin,'chaves-setores/bloqueio','POST',{'setor':'Psicotrópicos','bloqueado':False},at)[0],200)
         self.assertEqual(take(op,ot,'Psicotrópicos')[0],201)
+
+    def test_names_without_matricula_are_suggested_in_routes(self):
+        admin,at,op,ot=self.door_clients('nomes')
+        book=make_book({'Colaboradores':[['Matricula','Nome Completo'],[66001,'Com Matricula Rota'],['','Patricia Sem Matricula']]})
+        code,body=self.upload(admin,at,book)
+        self.assertEqual(code,200)
+        self.assertEqual(body['abas']['colaboradores'],{'novos':1,'atualizados':0,'ignorados':0,'sem_matricula':1})
+        self.assertEqual(self.req(op,'bases/colaboradores?q=sem%20matricula')[1],[])  # not in the matrícula lookup
+        self.assertEqual(self.upload(admin,at,book)[1]['abas']['colaboradores']['sem_matricula'],1)  # reimport keeps one
+        rota={'module':'rotas','payload':{'rota':'R9','tipo':app.MODULES['rotas']['fields'][1][4][0],'placa':'ABC1234','condutor':'condutor so de rota','auxiliar':'auxiliar so de rota','lacre':'L','saida':'2026-11-17T10:00','liberado_por':'L'}}
+        self.assertEqual(self.req(op,'records','POST',rota,ot)[0],201)
+        names=lambda q:[n['nome'] for n in self.req(op,'bases/nomes?q='+q)[1]]
+        self.assertEqual(names('patricia%20sem'),['PATRICIA SEM MATRICULA'])
+        self.assertEqual(names('com%20matricula%20rota'),['COM MATRICULA ROTA'])
+        self.assertEqual(names('so%20de%20rota'),['AUXILIAR SO DE ROTA','CONDUTOR SO DE ROTA'])
+        self.assertEqual(self.req(op,'bases/nomes?q=com%20matricula%20rota')[1][0]['detalhe'],'66001')
+        self.assertNotIn('nome',self.req(op,'bootstrap')[1]['listas'])  # names are searched, not sent to every screen
+        self.assertEqual(self.req(admin,'bases')[1]['colaboradores']['sem_matricula'],1)
+        raw=urllib.request.urlopen(self.base+'/bases.js').read().decode('utf-8')
+        self.assertIn("'bases/nomes?q='",raw)
+
+    def test_import_warns_when_one_matricula_or_document_has_several_names(self):
+        admin,at,op,ot=self.door_clients('repetidos')
+        book=make_book({'Colaboradores':[['Matricula','Nome Completo'],[55001,'Pessoa Um'],[55001,'Pessoa Dois'],[55002,'Sozinha'],[55002,'Sozinha']],
+                        'Acesso de Terceiros':[['Nome','CPF','Empresa'],['Terceiro A','000.000.000-00','X'],['Terceiro B','00000000000','Y'],['Outro Final 000','111.111.111-00','Z']]})
+        code,body=self.upload(admin,at,book);self.assertEqual(code,200)
+        self.assertEqual(body['abas']['colaboradores']['repetidos'],[{'chave':'Matrícula 55001','nomes':['PESSOA UM','PESSOA DOIS']}])  # same name twice is fine
+        self.assertEqual(body['abas']['terceirizados']['repetidos'],[{'chave':'CPF terminado em 000','nomes':['TERCEIRO A','TERCEIRO B']}])
+        raw=urllib.request.urlopen(self.base+'/bases.js').read().decode('utf-8')
+        self.assertIn('?.repetidos',raw)
 
 if __name__=='__main__':unittest.main(verbosity=2)

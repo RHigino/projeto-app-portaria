@@ -1,7 +1,7 @@
 'use strict';
 // Bases kept in the database: fed by every record saved in the app, loaded once from .xlsx (Configurações) and the lookups they power.
 const BASES_INFO=[
-  ['colaboradores','Colaboradores','Aba Colaboradores','Situação, Matricula, Nome Completo, Cargo','Pela matrícula, preenche nome e cargo em Armários e Escaninhos, Chaves de setores, Saída de materiais e Equipamentos móveis. Sugere nomes ao digitar o condutor e o auxiliar em Rotas e o colaborador de retorno em Equipamentos móveis.'],
+  ['colaboradores','Colaboradores','Aba Colaboradores','Situação, Matricula, Nome Completo, Cargo','Pela matrícula, preenche nome e cargo em Armários e Escaninhos, Chaves de setores, Saída de materiais e Equipamentos móveis. Sugere nomes ao digitar o condutor e o auxiliar em Rotas e o colaborador de retorno em Equipamentos móveis. Um nome sem matrícula também entra, mas só para essas sugestões de nome.'],
   ['terceirizados','Terceirizados','Aba Acesso de Terceiros','Nome, CPF, RG, Empresa/Transportadora','Pelo CPF ou RG, preenche nome e empresa no Cadastro de pessoas. Cada pessoa cadastrada entra na base.'],
   ['fornecedores','Fornecedores','Aba Fornecedores','Transportador, Fornecedor, Motivo','Listas para escolher em Devoluções.'],
   ['frota','Placas e condutores','Aba Placa do carro e caminhão','Placas dos Caminhoes, Placa do Carro, Condutor, Auxiliar, Rota','Listas para escolher em Rotas (rota e placa do caminhão).'],
@@ -32,7 +32,7 @@ async function mountBases(){
   input.onchange=()=>uploadBase(input);
   try{
     const s=await api('bases');
-    $('#base-info-colaboradores').textContent=s.colaboradores.total?`${s.colaboradores.total} colaboradores${when(s.colaboradores.atualizado)}`:'Base vazia.';
+    const c=s.colaboradores;$('#base-info-colaboradores').textContent=c.total||c.sem_matricula?`${c.total} colaboradores${c.sem_matricula?` · ${c.sem_matricula} só com nome (sem matrícula)`:''}${when(c.atualizado)}`:'Base vazia.';
     $('#base-info-terceirizados').textContent=s.terceirizados.total?`${s.terceirizados.total} terceirizados${when(s.terceirizados.atualizado)}`:'Base vazia.';
     const f=s.fornecedores;$('#base-info-fornecedores').textContent=f.transportador+f.fornecedor+f.motivo?`${f.transportador} transportadores · ${f.fornecedor} fornecedores · ${f.motivo} motivos`:'Base vazia.';
     const v=s.frota;$('#base-info-frota').textContent=v.rota+v.placa_caminhao+v.placa_carro+v.condutor+v.auxiliar?`${v.rota} rotas · ${v.placa_caminhao} placas de caminhão · ${v.placa_carro} placas de carro · ${v.condutor} condutores · ${v.auxiliar} auxiliares`:'Base vazia.';
@@ -41,9 +41,13 @@ async function mountBases(){
 
 function importSummary({abas,ignoradas}){
   const tabs=BASES_INFO.filter(([key])=>abas[key]).map(([key,name])=>{
-    const n=abas[key];return `${name}: ${n.novos} novos, ${n.atualizados} já existentes${n.ignorados?`, ${n.ignorados} ignorados`:''}`;
+    const n=abas[key];return `${name}: ${n.novos} novos, ${n.atualizados} já existentes${n.sem_matricula?`, ${n.sem_matricula} só com nome (sem matrícula)`:''}${n.ignorados?`, ${n.ignorados} ignorados`:''}`;
   });
-  return tabs.join(' · ')+(ignoradas.length?` · Abas não usadas: ${ignoradas.join(', ')}`:'');
+  // One matrícula or document with several names: each row replaced the one before, only the last one stayed.
+  const repeated=BASES_INFO.flatMap(([key])=>abas[key]?.repetidos||[]).map(n=>`${n.chave}: ${n.nomes.join(', ')} (ficou só ${n.nomes[n.nomes.length-1]})`);
+  const more=BASES_INFO.reduce((sum,[key])=>sum+(abas[key]?.repetidos_mais||0),0);
+  const warning=repeated.length?['','','ATENÇÃO, mesma matrícula ou documento para pessoas diferentes. Corrija na planilha e importe de novo:',...repeated,...(more?[`… e mais ${more} casos.`]:[])].join('\n'):'';
+  return tabs.join(' · ')+(ignoradas.length?` · Abas não usadas: ${ignoradas.join(', ')}`:'')+warning;
 }
 
 async function uploadBase(input){
@@ -130,6 +134,12 @@ function attachSelect(input,options,kind){
   input.replaceWith(select);
   if(isAdmin())attachNewItem(select,kind);
 }
+// Puts a new option where the server's (already sorted) list has it, not at the end.
+function insertInOrder(select,option,ordered){
+  const after=ordered.slice(ordered.indexOf(option.value)+1);
+  const next=[...select.options].find(o=>after.includes(o.value));
+  select.insertBefore(option,next||null);
+}
 function attachNewItem(select,kind){
   const row=document.createElement('div');row.className='selectnew';
   select.replaceWith(row);
@@ -139,9 +149,13 @@ function attachNewItem(select,kind){
   const value=document.createElement('input');value.maxLength=200;value.placeholder='Novo valor';value.setAttribute('aria-label','Novo valor da lista');
   const save=document.createElement('button');save.type='button';save.className='btn primary';save.textContent='Incluir';
   const cancel=document.createElement('button');cancel.type='button';cancel.className='btn';cancel.textContent='Cancelar';
-  box.append(value,save,cancel);row.append(select,add);row.after(box);
+  const edit=document.createElement('button');edit.type='button';edit.className='btn newitem';edit.textContent='Editar';
+  edit.title='Ver os itens desta lista e excluir o que foi cadastrado errado';
+  const editor=listEditor(select,kind);
+  box.append(value,save,cancel);row.append(select,add,edit);row.after(box,editor);
   const close=()=>{box.hidden=true;value.value='';select.focus()};
-  add.onclick=()=>{box.hidden=false;value.focus()};
+  add.onclick=()=>{editor.hidden=true;box.hidden=false;value.focus()};
+  edit.onclick=()=>{box.hidden=true;editor.hidden=!editor.hidden;if(!editor.hidden)editor.fill()};
   cancel.onclick=close;
   const submit=async()=>{
     save.disabled=true;
@@ -151,12 +165,43 @@ function attachNewItem(select,kind){
       const lists=await api('bootstrap').then(b=>b.listas);  // the server may have normalized it (plates)
       state.listas=lists;
       const saved=lists[kind].find(v=>v===typed||v===typed.replace(/[\s-]/g,''))||typed;
-      if(![...select.options].some(o=>o.value===saved))select.append(makeOption(saved));
+      if(![...select.options].some(o=>o.value===saved))insertInOrder(select,makeOption(saved),lists[kind]);
       select.value=saved;close();toast('Incluído na lista.');
     }catch(err){toast(err.message,true)}finally{save.disabled=false}
   };
   save.onclick=submit;
   value.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();submit()}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close()}});
+}
+// The "Editar" panel: every item of the list with an "x" that deletes it from the database (admin only).
+function listEditor(select,kind){
+  const editor=document.createElement('div');editor.className='listeditor';editor.hidden=true;
+  const items=document.createElement('ul');
+  const done=document.createElement('button');done.type='button';done.className='btn';done.textContent='Fechar';
+  done.onclick=()=>{editor.hidden=true;select.focus()};
+  editor.append(items,done);
+  const remove=async(item,button)=>{
+    if(!confirm(`Excluir "${item}" da lista?\nOs registros que já usam esse valor continuam como estão.`))return;
+    button.disabled=true;
+    try{
+      await api('bases/listas',{method:'DELETE',body:JSON.stringify({tipo:kind,valor:item})});
+      state.listas={...state.listas,[kind]:(state.listas[kind]||[]).filter(v=>v!==item)};
+      [...select.options].find(o=>o.value===item&&o!==select.options[0])?.remove();
+      editor.fill();toast('Excluído da lista.');
+    }catch(err){toast(err.message,true);button.disabled=false}
+  };
+  editor.fill=()=>{
+    const values=state.listas?.[kind]||[];
+    items.replaceChildren(...values.map(item=>{
+      const li=document.createElement('li');
+      const label=document.createElement('span');label.textContent=item;
+      const x=document.createElement('button');x.type='button';x.className='listremove';x.textContent='✕';
+      x.title=`Excluir ${item}`;x.setAttribute('aria-label',`Excluir ${item} da lista`);
+      x.onclick=()=>remove(item,x);
+      li.append(label,x);return li;
+    }));
+    if(!values.length){const li=document.createElement('li');li.textContent='A lista está vazia.';items.append(li)}
+  };
+  return editor;
 }
 async function lookup(input,request,onResult){
   try{onResult(await api(request))}catch(err){setHint(input,'Não foi possível consultar a base: '+err.message,true)}
@@ -210,9 +255,10 @@ function bindNameSuggest(input){
   input.addEventListener('input',debounce(()=>{
     const q=input.value.trim();
     if(q.length<2){list.hide();return}
-    lookup(input,'bases/colaboradores?q='+encodeURIComponent(q),found=>{
+    // Employees (by matrícula), names without matrícula and anyone already used as driver or helper.
+    lookup(input,'bases/nomes?q='+encodeURIComponent(q),found=>{
       const names=found.filter(p=>p.nome!==q.toUpperCase());  // nothing left to suggest once a name is picked
-      list.show(names.map(p=>[p.nome,`${p.matricula}${p.cargo?' · '+p.cargo:''}`]));
+      list.show(names.map(p=>[p.nome,p.detalhe]));
     });
   }));
 }

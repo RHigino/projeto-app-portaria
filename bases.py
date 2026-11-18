@@ -17,12 +17,15 @@ MAX_PART = 60 * 1024 * 1024  # uncompressed size of one zip part (guards against
 MAX_ROWS = 20000
 HEADER_SEARCH = 20  # rows scanned for the header line (title rows may come first)
 SUGGESTIONS = 10
+MAX_REPEATED = 30  # repeated keys listed on the import screen
 XLSX_NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
 REL_NS = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
 PKG_REL_NS = '{http://schemas.openxmlformats.org/package/2006/relationships}'
 BASE_LISTS = {'fornecedores': ('transportador', 'fornecedor', 'motivo'),
               'frota': ('placa_caminhao', 'placa_carro', 'condutor', 'auxiliar', 'rota')}
 LIST_TYPES = sum(BASE_LISTS.values(), ())
+NAME_ONLY = 'nome'  # base_listas kind: employees typed in the Colaboradores tab without a matrícula
+NAME_KINDS = (NAME_ONLY, 'condutor', 'auxiliar')  # every list that holds people's names, searched by find_nomes
 PLATE_TYPES = ('placa_caminhao', 'placa_carro')
 PLATE_FORMAT = re.compile(r'[A-Z]{3}[0-9][A-Z0-9][0-9]{2}')
 # A tab belongs to the base whose word appears in its name (normalized), e.g. "Acesso de Terceiros".
@@ -207,7 +210,13 @@ def import_workbook(c, data: bytes, stamp: str) -> dict:
 
 def import_base(c, base, rows, stamp):
     """Adds new entries and updates existing ones (by matrícula, CPF/RG or value). Returns counts for the screen."""
-    counts = {'novos': 0, 'atualizados': 0, 'ignorados': 0}
+    counts = {'novos': 0, 'atualizados': 0, 'ignorados': 0, **({'sem_matricula': 0} if base == 'colaboradores' else {})}
+    names_by_key = {}  # key -> (label shown on screen, names found with it in this sheet), to warn when one replaced another
+
+    def note(key, label, name):
+        names = names_by_key.setdefault(key, (label, []))[1]
+        if name not in names:
+            names.append(name)
 
     def save(exists_sql, key, upsert_sql, params):
         existed = c.execute(exists_sql, (key,)).fetchone()
@@ -217,9 +226,14 @@ def import_base(c, base, rows, stamp):
     for values in _records(rows, base):
         if base == 'colaboradores':
             matricula = values['matricula'].lstrip('0') or values['matricula']
-            if not matricula or not values['nome']:
+            if values['nome'] and not matricula:  # still suggested by name (Rotas), never by matrícula
+                c.execute('INSERT OR IGNORE INTO base_listas VALUES(?,?)', (NAME_ONLY, values['nome']))
+                counts['sem_matricula'] += 1
+                continue
+            if not values['nome']:
                 counts['ignorados'] += 1
                 continue
+            note(matricula, 'Matrícula ' + matricula, values['nome'])
             save('SELECT 1 FROM base_colaboradores WHERE matricula=?', matricula,
                  'INSERT INTO base_colaboradores VALUES(?,?,?,?,?) ON CONFLICT(matricula) DO UPDATE SET nome=excluded.nome,cargo=excluded.cargo,situacao=excluded.situacao,updated_at=excluded.updated_at',
                  (matricula, values['nome'], values.get('cargo', ''), values.get('situacao', ''), stamp))
@@ -229,6 +243,7 @@ def import_base(c, base, rows, stamp):
                 counts['ignorados'] += 1
                 continue
             key = 'CPF:' + cpf if cpf else 'RG:' + rg
+            note(key, 'CPF terminado em ' + cpf[-3:] if cpf else 'RG ' + rg, values['nome'])
             save('SELECT 1 FROM base_terceiros WHERE chave=?', key,
                  'INSERT INTO base_terceiros VALUES(?,?,?,?,?,?) ON CONFLICT(chave) DO UPDATE SET nome=excluded.nome,cpf=excluded.cpf,rg=excluded.rg,empresa=excluded.empresa,updated_at=excluded.updated_at',
                  (key, values['nome'], cpf, rg, values.get('empresa', ''), stamp))
@@ -244,7 +259,12 @@ def import_base(c, base, rows, stamp):
                         continue
                 added = c.execute('INSERT OR IGNORE INTO base_listas VALUES(?,?)', (kind, value)).rowcount
                 counts['novos' if added else 'atualizados'] += 1
-    if not counts['novos'] and not counts['atualizados']:
+    repeated = [{'chave': label, 'nomes': names} for label, names in names_by_key.values() if len(names) > 1]
+    if repeated:  # only the last row of each key stays in the base
+        counts['repetidos'] = repeated[:MAX_REPEATED]
+        if len(repeated) > MAX_REPEATED:
+            counts['repetidos_mais'] = len(repeated) - MAX_REPEATED
+    if not counts['novos'] and not counts['atualizados'] and not counts.get('sem_matricula'):
         detail = f" ({counts['ignorados']} linhas sem os dados obrigatórios)" if counts['ignorados'] else ''
         raise ValueError(f'Nenhuma linha foi importada{detail}.')
     return counts
@@ -283,6 +303,14 @@ def add_list_value(c, kind: str, value: str) -> bool:
     return c.execute('INSERT OR IGNORE INTO base_listas VALUES(?,?)', (kind, value)).rowcount == 1
 
 
+def remove_list_value(c, kind: str, value: str) -> bool:
+    """Removes a value from a choice list; returns False when it was not there. Raises ValueError for an unknown list.
+    Records that already use the value keep it."""
+    if kind not in LIST_TYPES:
+        raise ValueError('Lista inválida.')
+    return c.execute('DELETE FROM base_listas WHERE tipo=? AND valor=?', (kind, str(value).strip())).rowcount == 1
+
+
 def learn_record(c, module: str, payload: dict, stamp: str) -> None:
     """Saves in the bases the people and values a record names, so the next lookups find them with no spreadsheet.
 
@@ -317,7 +345,7 @@ def summary(c):
     one = lambda sql: c.execute(sql).fetchone()
     colab, terc = one('SELECT COUNT(*), MAX(updated_at) FROM base_colaboradores'), one('SELECT COUNT(*), MAX(updated_at) FROM base_terceiros')
     lists = dict(c.execute('SELECT tipo, COUNT(*) FROM base_listas GROUP BY tipo').fetchall())
-    return {'colaboradores': {'total': colab[0], 'atualizado': colab[1]},
+    return {'colaboradores': {'total': colab[0], 'atualizado': colab[1], 'sem_matricula': lists.get(NAME_ONLY, 0)},
             'terceirizados': {'total': terc[0], 'atualizado': terc[1]},
             **{base: {k: lists.get(k, 0) for k in kinds} for base, kinds in BASE_LISTS.items()}}
 
@@ -325,7 +353,8 @@ def summary(c):
 def lists(c):
     """Choice lists of the Devoluções, Rotas and Veículos forms, sent to every logged-in user (no documents)."""
     result = {k: [] for k in LIST_TYPES}
-    for kind, value in c.execute('SELECT tipo, valor FROM base_listas ORDER BY valor'):
+    marks = ','.join('?' * len(LIST_TYPES))
+    for kind, value in c.execute(f'SELECT tipo, valor FROM base_listas WHERE tipo IN ({marks}) ORDER BY valor', LIST_TYPES):
         result[kind].append(value)
     return result
 
@@ -345,6 +374,23 @@ def find_colaboradores(c, query):
     found += c.execute("SELECT matricula,nome,cargo,situacao FROM base_colaboradores WHERE nome LIKE ? ESCAPE '\\' ORDER BY nome LIMIT ?", (_like(query), SUGGESTIONS)).fetchall()
     unique = {r['matricula']: dict(r) for r in found}
     return list(unique.values())[:SUGGESTIONS]
+
+
+def find_nomes(c, query):
+    """People's names containing the text, from the employee base and the name lists, without repeats.
+
+    Detail: the matrícula (and role) for employees, or where a name without matrícula came from.
+    """
+    found = {p['nome']: f"{p['matricula']}{' · ' + p['cargo'] if p['cargo'] else ''}" for p in find_colaboradores(c, query)}
+    query = str(query).strip()[:100]
+    if len(query) < 2:
+        return []
+    marks = ','.join('?' * len(NAME_KINDS))
+    origin = {NAME_ONLY: 'Colaborador sem matrícula', 'condutor': 'Condutor', 'auxiliar': 'Auxiliar'}
+    for kind, value in c.execute(f"SELECT tipo, valor FROM base_listas WHERE tipo IN ({marks}) AND valor LIKE ? ESCAPE '\\' ORDER BY valor LIMIT ?",
+                                 (*NAME_KINDS, _like(query), SUGGESTIONS * len(NAME_KINDS))):
+        found.setdefault(value, origin[kind])
+    return [{'nome': name, 'detalhe': detail} for name, detail in sorted(found.items())][:SUGGESTIONS]
 
 
 def find_terceiro_document(c, document):

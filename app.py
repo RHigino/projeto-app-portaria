@@ -530,6 +530,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,{'schema':[m for m in SCHEMA if m['id'] in allowed],'settings':dict(c.execute('SELECT key,value FROM settings').fetchall()),'statuses':STATUSES,'listas':bases.lists(c)})
             if path=='/api/bases/colaboradores' and method=='GET':
                 return self.send(200,bases.find_colaboradores(c,parse_qs(urlsplit(self.path).query).get('q',[''])[0]))
+            if path=='/api/bases/nomes' and method=='GET':
+                return self.send(200,bases.find_nomes(c,parse_qs(urlsplit(self.path).query).get('q',[''])[0]))
             if path=='/api/bases/terceirizados' and method=='GET':
                 query=parse_qs(urlsplit(self.path).query)
                 if 'documento' in query:return self.send(200,{'pessoa':bases.find_terceiro_document(c,query['documento'][0])})
@@ -582,6 +584,12 @@ class Handler(BaseHTTPRequestHandler):
                 added=bases.add_list_value(c,kind if isinstance(kind,str) else '',data.get('valor','') if isinstance(data.get('valor',''),str) else '')
                 if added:audit(c,user,'Item incluído na lista',kind,str(data.get('valor','')).strip().upper()[:200])
                 c.commit();return self.send(201 if added else 200,{'incluido':added})
+            if path=='/api/bases/listas' and method=='DELETE':
+                data=self.body();kind=data.get('tipo');value=data.get('valor','');c.execute('BEGIN IMMEDIATE')
+                if not bases.remove_list_value(c,kind if isinstance(kind,str) else '',value if isinstance(value,str) else ''):
+                    c.rollback();return self.send(404,{'error':'Item não encontrado na lista.'})
+                audit(c,user,'Item excluído da lista',kind,value.strip()[:200])
+                c.commit();return self.send(200,{'excluido':True})
             if path=='/api/bases' and method=='POST':
                 data=self.xlsx_body();c.execute('BEGIN IMMEDIATE')
                 result=bases.import_workbook(c,data,now())

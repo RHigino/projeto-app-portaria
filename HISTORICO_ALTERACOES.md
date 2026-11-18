@@ -1,13 +1,103 @@
 # Histórico de alterações
 
-Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da mais recente para a mais antiga.
+Este documento explica o que é o sistema Prevenção de Perdas (GateFlow), por que ele foi criado e como funciona. Depois vêm as mudanças, da mais recente para a mais antiga.
 
-## Situação atual (03/11/2026)
+## Sobre o projeto
 
-- O projeto está em `Documents\projetospython\projeto-portariaprevencao\GateFlow`. Antes, ficava em `Downloads\GateFlow_Portaria_v1\GateFlow`.
+### Por que foi criado
+
+A Prevenção de Perdas do CD Bahia controlava a portaria numa planilha do Excel (`Pasta_de_Trabalho_Portaria.xlsb`), com uma aba para cada controle. A planilha tinha limites:
+- não identificava quem fez cada lançamento;
+- não impedia dois lançamentos para o mesmo armário ou a mesma chave;
+- não mostrava, na hora, o que estava em aberto;
+- ficava travada quando alguém a deixava aberta.
+
+O sistema substitui esses controles com:
+- login individual;
+- regras garantidas pelo servidor;
+- auditoria de tudo;
+- um banco único, usado por todos os computadores da portaria.
+
+A planilha original serviu só de mapa dos controles (ver `MAPEAMENTO_PLANILHA.md`). Nenhum dado pessoal dela foi copiado.
+
+### O que o sistema controla
+
+O menu tem três grupos. Dentro de cada grupo, os módulos aparecem em ordem alfabética.
+
+| Grupo | Módulo | O que registra |
+|---|---|---|
+| Portaria | Cadastro de pessoas | Entrada de visitantes e terceirizados: nome, documento (CPF, RG ou CNH), empresa e data e hora da entrada. |
+| Operação logística | Chaves de setores | Retirada e devolução das chaves dos 8 setores controlados (Medicamentos Especiais, Alimentos, Psicotrópicos, Termolábeis, Reversa 01 a 03 e Visados 2). Só uma retirada por chave de cada vez. |
+| Operação logística | Devoluções | Mercadoria devolvida: transportador, fornecedor, motivo, volumes, conferente e quem conferiu pela Prevenção. |
+| Operação logística | Rotas | Saída e retorno das rotas: rota, tipo, placa, condutor, auxiliar, lacres e quem liberou. |
+| Operação logística | Saída de materiais | Materiais que saem do CD, com a autorização. |
+| Patrimônio e controle | Armários e Escaninhos | Vínculo do colaborador ao escaninho (216) e aos armários dos vestiários masculino (1 a 300) e feminino (157 a 300), com mapa clicável, bloqueio de portas e cópia de chave. |
+| Patrimônio e controle | Equipamentos móveis | Retirada e retorno de empilhadeiras, patoladas e JETs (lista fixa). |
+
+A **Visão geral** mostra os números do dia e o que está em aberto. Veículos existiu até 17/11/2026. Os registros antigos de Veículos continuam no banco, mas não aparecem nas telas.
+
+### Como funciona
+
+**Instalação e banco**
+- O sistema é um programa só, o `PrevencaoPerdas.exe`. Ele abre o navegador no próprio computador (`127.0.0.1:8780`). Não precisa de internet nem de instalar nada.
+- **Todos os computadores usam o mesmo banco SQLite**, que fica numa pasta de rede. Não há servidor central, porque a máquina da portaria desliga nas quedas de energia.
+- O banco usa o modo clássico do SQLite, sem WAL. Cada gravação reserva o banco por um instante (`BEGIN IMMEDIATE`). Assim, dois computadores não pegam o mesmo armário nem a mesma chave ao mesmo tempo.
+- **Backup automático** em `backups\`, na pasta do banco: ao abrir e a cada 6 horas, guardando as 60 últimas cópias. Ao abrir, o sistema também confere se o banco está íntegro.
+
+**Usuários**
+- Login individual. O **administrador** cria usuários, edita, exclui, importa, bloqueia portas e chaves e inclui ou exclui itens das listas.
+- O **operador** lança, consulta e registra retornos, e vê só as abas que o administrador liberar.
+- O operador sai sozinho depois de 2 minutos parado. O administrador não sai.
+
+**Registros**
+- Todo registro guarda quem lançou e quando. O texto é gravado em MAIÚSCULAS.
+- Registros com retorno (Rotas, Equipamentos, Armários e Escaninhos, Chaves de setores) ficam **Em aberto** até alguém usar **Registrar retorno**.
+- Cada ação importante fica na **auditoria**: login, criação, edição, exclusão, bloqueios, importação e itens das listas.
+
+**Bases de consulta**
+- São três: colaboradores, terceirizados e listas de escolha (rotas, placas, fornecedores etc.). Elas ficam dentro do banco SQLite.
+- **O próprio sistema alimenta as bases:**
+  - um terceirizado cadastrado já é encontrado pelo documento;
+  - uma matrícula nova entra na base de colaboradores;
+  - os valores usados entram nas listas.
+- A planilha `Dados do projeto.xlsx` (Configurações › Importar planilha) serve só para carregar o que já existia. Reimportar atualiza e acrescenta, mas não apaga nada.
+- Nos formulários, o administrador tem **+ Novo**, para incluir um item na lista na hora, e **Editar**, para excluir um item com o ✕.
+- Na importação, uma mesma matrícula ou um mesmo CPF com nomes diferentes fica só com a última linha. Por isso, a importação lista esses casos para correção.
+
+**Arquivos principais**
+
+| Arquivo | Função |
+|---|---|
+| `app.py` | Servidor, regras, login e banco. |
+| `bases.py` | Planilha, bases e buscas. |
+| `schema.json` | Módulos, campos e ordem do menu. |
+| `static/` | Telas: `app.js`, `bases.js`, `mapas.js`, `chaves_setores.js` e `style.css`. |
+| `test_app.py` | Testes automáticos. |
+| `iniciar.py` e `gerar_exe.bat` | Montam o `.exe`. |
+
+### Linha do tempo resumida
+
+| Data | O que mudou |
+|---|---|
+| Antes de 29/10 | Primeira versão: login, perfis, 7 módulos, auditoria, JSON e backup. |
+| 29/10 | Banco na pasta de rede, `.exe`, visual novo e mapa dos escaninhos. |
+| 30/10 | Armários dos vestiários, bases por planilha, MAIÚSCULAS, `.exe` sem janela preta, motivo do bloqueio, saída por inatividade e cópia de chave. |
+| 03/11 | Planilha única com todas as bases e listas suspensas. |
+| 04/11 | Maiúsculas em todos os campos. |
+| 05/11 | 300 armários, feminino de 157 a 300, bloqueio em sequência e marca de terceirizado. |
+| 06/11 | Devoluções com 0 volume e "Conferido por (Prevenção)"; tabelas em uma linha. |
+| 09/11 | "Liberado por" em Rotas. |
+| 10/11 | Nomes da base em Rotas, colaborador de retorno, data de entrada, lista fixa de equipamentos e tabela de Rotas compacta. |
+| 13/11 | Bases alimentadas pelo próprio sistema, "+ Novo", ocupação sem as portas bloqueadas e JET 04/05. |
+| 17/11 | Chaves de setores no lugar de Veículos, menu em ordem, nomes sem matrícula em Rotas e aviso de repetidos na importação. |
+| 18/11 | "Editar" para excluir itens das listas; o "+ Novo" inclui o item na ordem certa. |
+
+## Situação atual (18/11/2026)
+
+- O projeto está em `Documents\projetospython\projeto-portariaprevencao\GateFlow`. O código fica no GitHub, na branch `feat/armarios-300-retorno-sobre`.
 - O sistema está em implantação no CD, com o banco na pasta de rede.
-- Os testes automáticos passam: `python -m unittest` (42 testes).
-- **`dist\PrevencaoPerdas.exe` foi gerado em 17/11/2026, às 09:08**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado em uma pasta temporária, com banco descartável.
+- Os testes automáticos passam: `python -m unittest` (44 testes).
+- **`dist\PrevencaoPerdas.exe` foi gerado em 18/11/2026, às 09:54**, com todas as mudanças listadas abaixo. Ele roda sem janela (sem a tela preta). Foi testado numa pasta temporária, com banco descartável.
 - **A pasta de rede ainda não recebeu esse `.exe`.** Até a troca, os computadores continuam com a versão anterior.
 
 ### Como está instalado no CD
@@ -41,9 +131,11 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 
 ### Próximos passos combinados
 
-1. Trocar o `.exe` da pasta de rede pelo de 05/11/2026, 14:59 (ver "Como atualizar o sistema").
-2. Testar com dois computadores: cadastrar num, apertar F5 no outro, fechar um e ver o outro continuar.
-3. Criar os usuários da equipe e importar a planilha `Dados do projeto.xlsx` (o banco da rede recomeçou do zero). Antes, preencher as colunas Condutor e Auxiliar: enquanto estiverem vazias, esses campos ficam como texto livre.
+1. Trocar o `.exe` da pasta de rede pelo de 18/11/2026, 09:54 (ver "Como atualizar o sistema").
+2. Corrigir a planilha `Dados do projeto.xlsx` e importar de novo:
+   - Na aba Colaboradores, dar a cada pessoa a sua matrícula (três pessoas novas estavam com a mesma matrícula) ou deixar o campo em branco.
+   - Na aba Acesso de Terceiros, corrigir os CPFs repetidos, como o 000.000.000-00.
+3. Testar com dois computadores: cadastrar num, apertar F5 no outro, fechar um e ver o outro continuar.
 4. Opcional: pedir à TI que só os usuários do sistema acessem a pasta de rede. O banco tem nomes e CPFs, e ocultar a pasta não protege.
 
 ### Ideias oferecidas e ainda não feitas
@@ -57,10 +149,28 @@ Registro das mudanças feitas no sistema Prevenção de Perdas (GateFlow), da ma
 - **Cada computador roda o próprio `.exe`** e todos usam o mesmo banco na rede, em modo clássico do SQLite (sem WAL). Não haverá servidor central: a máquina da portaria desliga com as quedas de energia.
 - **Cópia da chave:** o armário não pode ser liberado enquanto a cópia não voltar, e só uma cópia fica em uso por vez. Combinado assim; pode mudar se o usuário pedir.
 - **Saída por inatividade:** 2 minutos, só para operadores. O administrador não sai sozinho, a pedido do usuário. Cuidado: ao se afastar de um computador que não é o seu, clique em **Sair**.
-- **Valor fora da lista:** não pode ser escolhido na tela, nem pelo administrador. A portaria anota, o administrador acrescenta na planilha, reimporta e lança o registro. A opção "Outra (digitar)" chegou a existir e saiu a pedido do usuário.
-- **Condutor e Motorista usam a mesma lista:** o mesmo motorista atende Rotas e Veículos. Não há filtro por condutor na tabela de registros, porque o usuário confirmou que não precisa.
+- **Valor fora da lista:** não pode ser escolhido na tela. Desde 13/11/2026, o administrador o inclui na hora com **+ Novo**, sem planilha. Desde 18/11/2026, ele exclui um item errado com **Editar**. A opção "Outra (digitar)" chegou a existir e saiu a pedido do usuário.
+- **O sistema se alimenta do banco, não da planilha** (13/11/2026). A planilha é só a carga inicial.
+- **Chaves de setores:** uma chave por setor, só controle, como os escaninhos. O usuário pediu para não perguntar a quantidade de cópias.
+- **Excluir item da lista:** o botão Editar abre um painel com ✕, porque a lista do navegador não aceita um ✕ em cada item. O usuário escolheu isso em vez de uma lista feita no sistema.
 
 ---
+
+## 18/11/2026: excluir item das listas ("Editar")
+
+- Ao lado do "+ Novo" das listas (Rota, Placa, Fornecedor etc.) há um botão **Editar**, só para o administrador. Ele abre os itens da lista, cada um com um **✕**. O ✕ pede confirmação e exclui o item do banco.
+- Os registros que já usam o valor continuam como estão. A exclusão fica no log de auditoria.
+- Novo endereço: `DELETE /api/bases/listas` (só o administrador).
+- O item incluído pelo "+ Novo" entra na ordem da lista, e não mais no fim.
+- O `.exe` foi gerado em 18/11/2026, às 09:54, com esta mudança. A versão das 08:39, do mesmo dia, tinha só a parte de 17/11 (noite).
+
+## 17/11/2026 (noite): nomes sem matrícula em Rotas e aviso de matrícula/documento repetido
+
+- **Rotas: as sugestões de condutor e auxiliar buscam em todos os nomes.** Entram os colaboradores com matrícula, os nomes sem matrícula e quem já foi condutor ou auxiliar em alguma rota. A busca nova fica em `/api/bases/nomes`.
+- **Aba Colaboradores:** uma linha com nome e sem matrícula não é mais ignorada. Ela entra só como nome, para essas sugestões, e não aparece na busca por matrícula. A importação mostra "N só com nome (sem matrícula)".
+- **Aviso de repetidos:** se uma mesma matrícula ou um mesmo CPF/RG aparece com nomes diferentes na planilha, cada linha substitui a anterior e só a última fica. Agora a importação lista esses casos, até 30, e diz "e mais N" quando há mais. Do CPF, o aviso mostra só o final.
+  - Na planilha do usuário, uma mesma matrícula tinha sido usada para três pessoas novas, e só a última ficava no banco.
+  - A aba de terceiros tinha cerca de 80 CPFs repetidos com nomes diferentes. Um deles era o 000.000.000-00, usado para 34 pessoas.
 
 ## 17/11/2026 (09:08): mais setores nas Chaves de setores
 
